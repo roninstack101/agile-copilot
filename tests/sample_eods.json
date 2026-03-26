@@ -1,0 +1,44 @@
+[
+  {
+    "id": "normal_eod",
+    "description": "Standard multi-task EOD with various types",
+    "sender": "Aarav Sharma",
+    "message": "Wednesday EOD\n- Schneider Catalogue Content changes\n- Banner reference docs x2\n- Brand Identity Setup Testing\n- Adhoc: Quick fix on homepage slider\n- Product page layout revision (dependency: waiting for assets from Design team)\n- Email template — submitted for review\n- Social media creatives — done"
+  },
+  {
+    "id": "html_eod",
+    "description": "EOD with HTML tags (as sent by Teams)",
+    "sender": "Priya Patel",
+    "message": "<p>Thursday EOD</p><ul><li>Dashboard wireframe redesign</li><li>Client presentation deck — done</li><li>Adhoc: Fix login page CSS bug</li></ul>"
+  },
+  {
+    "id": "minimal_eod",
+    "description": "Single-task EOD",
+    "sender": "Ravi Kumar",
+    "message": "Friday EOD\n- Sprint retrospective documentation"
+  },
+  {
+    "id": "priority_eod",
+    "description": "EOD with explicit priority keywords",
+    "sender": "Sneha Gupta",
+    "message": "Monday EOD\n- URGENT: Production bug fix on checkout flow\n- API integration testing\n- Nice to have: update README"
+  },
+  {
+    "id": "empty_eod",
+    "description": "Empty/greeting-only message",
+    "sender": "Test User",
+    "message": "Hey team, hope everyone had a great day!"
+  },
+  {
+    "id": "complex_eod",
+    "description": "Complex EOD with multiple features: adhoc, deps, quantities, stages",
+    "sender": "Arjun Mehta",
+    "message": "Tuesday EOD\n- Product listing page updates x3\n- Adhoc: Emergency server restart\n- Mobile responsive fixes (blocked on: needs design specs from UI team)\n- Newsletter template — sent for review\n- Payment gateway integration — completed\n- Low priority: Documentation cleanup"
+  },
+  {
+    "id": "grouped_eod",
+    "description": "EOD with backlog group headers (non-bullet section labels + bullet sub-tasks)",
+    "sender": "Yash Suthar",
+    "message": "yash\nfriday eod:\n\nbrand identity setup\n- research for parameters\n- designed the ui\n- tested the tool with yogini\n\nagile copilot:\n- azure cloud setup\n- development done\n- testing with shriya"
+  }
+]
