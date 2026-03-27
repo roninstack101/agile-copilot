@@ -14,3 +14,4 @@ env/
 .pytest_cache/
 .mypy_cache/
 *.log
+delegated_token.json

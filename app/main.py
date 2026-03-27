@@ -9,6 +9,8 @@ Endpoints:
   POST /api/notify-wip          — send WIP task summary to Teams group chat
   POST /api/eod-reminder        — send EOD reminder to Teams group chat
   POST /api/morning-summary     — send AI-prioritized morning summary to Teams
+  GET  /api/login               — start delegated auth (sign in to send Teams messages)
+  GET  /api/auth-callback       — OAuth callback to capture auth code
   GET  /health                  — health check
 """
 
@@ -17,6 +19,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.responses import RedirectResponse, HTMLResponse
 from pydantic import BaseModel
 
 from app.config import settings, get_sprint_end_date
@@ -94,6 +97,48 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+# ──────────────────────────────────────────────
+# Delegated auth — one-time user login for Teams messaging
+# ──────────────────────────────────────────────
+
+
+@app.get("/api/login")
+async def login(request: Request):
+    """Redirect user to Microsoft login to grant Teams messaging permission."""
+    from app.graph_auth import graph_auth
+
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/api/auth-callback"
+    login_url = graph_auth.get_login_url(redirect_uri)
+    return RedirectResponse(login_url)
+
+
+@app.get("/api/auth-callback")
+async def auth_callback(request: Request, code: str = "", error: str = ""):
+    """OAuth callback — exchange code for delegated token."""
+    from app.graph_auth import graph_auth
+
+    if error:
+        return HTMLResponse(f"<h2>Login failed</h2><p>{error}</p>", status_code=400)
+
+    if not code:
+        return HTMLResponse("<h2>No authorization code received</h2>", status_code=400)
+
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/api/auth-callback"
+
+    try:
+        await graph_auth.exchange_code(code, redirect_uri)
+        return HTMLResponse(
+            "<h2>Login successful!</h2>"
+            "<p>Agile Copilot can now send messages to your Teams chats.</p>"
+            "<p>You can close this tab.</p>"
+        )
+    except Exception as e:
+        logger.error("Auth callback failed: %s", e)
+        return HTMLResponse(f"<h2>Login failed</h2><p>{e}</p>", status_code=500)
 
 
 # ──────────────────────────────────────────────
@@ -427,7 +472,11 @@ async def create_subscription():
 
 
 async def _send_teams_message(content: str) -> None:
-    """Send a message to the Teams group chat."""
+    """Send a message to the Teams group chat.
+
+    Uses delegated (user) token first — this works for group chats.
+    Falls back to app-only token if delegated is not available.
+    """
     import httpx
     from app.graph_auth import graph_auth
     from app.config import GRAPH_BASE_URL
@@ -435,10 +484,21 @@ async def _send_teams_message(content: str) -> None:
     if not settings.CHAT_ID:
         raise ValueError("CHAT_ID not configured")
 
-    headers = await graph_auth.get_headers()
     url = f"{GRAPH_BASE_URL}/chats/{settings.CHAT_ID}/messages"
     payload = {"body": {"contentType": "html", "content": content}}
 
+    # Try delegated token first (works for group chats without bot installation)
+    user_headers = await graph_auth.get_user_headers()
+    if user_headers:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, headers=user_headers, json=payload)
+            resp.raise_for_status()
+            logger.info("Teams message sent via delegated token")
+            return
+
+    # Fall back to app-only token
+    logger.warning("No delegated token — falling back to app-only token (may 403 on group chats)")
+    headers = await graph_auth.get_headers()
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
