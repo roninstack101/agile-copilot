@@ -29,6 +29,7 @@ class Scheduler:
 
     async def _loop(self, eod_callback, morning_callback):
         """Main loop — checks time every 30 seconds, fires callbacks at target times."""
+        last_date: str = ""
         fired_today: set[str] = set()
 
         while self._running:
@@ -36,17 +37,18 @@ class Scheduler:
                 now = datetime.now(IST)
                 today_key = now.strftime("%Y-%m-%d")
 
-                # Reset fired set at midnight
-                if f"eod_{today_key}" not in fired_today and f"morning_{today_key}" not in fired_today:
-                    # New day — clear yesterday's markers
+                # Reset fired set when date changes
+                if today_key != last_date:
                     fired_today = set()
+                    last_date = today_key
+                    logger.info("New day detected: %s — reset fired markers", today_key)
 
-                # 6:00 PM EOD reminder
+                # 6:00 PM EOD reminder (fire once anytime between 6:00–6:30 PM)
                 eod_key = f"eod_{today_key}"
                 if (
                     eod_key not in fired_today
                     and now.time() >= EOD_REMINDER_TIME
-                    and now.time() < time(18, 5)  # 5 minute window
+                    and now.time() < time(18, 30)
                 ):
                     fired_today.add(eod_key)
                     logger.info("Triggering EOD reminder")
@@ -55,12 +57,12 @@ class Scheduler:
                     except Exception as e:
                         logger.error("EOD reminder failed: %s", e)
 
-                # 10:00 AM morning summary
+                # 10:00 AM morning summary (fire once anytime between 10:00–10:30 AM)
                 morning_key = f"morning_{today_key}"
                 if (
                     morning_key not in fired_today
                     and now.time() >= MORNING_SUMMARY_TIME
-                    and now.time() < time(10, 5)  # 5 minute window
+                    and now.time() < time(10, 30)
                 ):
                     fired_today.add(morning_key)
                     logger.info("Triggering morning WIP summary")
