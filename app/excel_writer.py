@@ -110,7 +110,7 @@ async def read_sheet(sheet_name: str | None = None) -> list[list[Any]]:
         response.raise_for_status()
         data = response.json()
 
-    values = data.get("values", [])
+    values = data.get("values") or []
     logger.info("Read %d rows from sheet '%s'", len(values), sheet)
     return values
 

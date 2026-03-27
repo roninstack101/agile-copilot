@@ -81,23 +81,24 @@ class Scheduler:
                 await asyncio.sleep(60)
 
     async def _keep_alive(self):
-        """Ping self every 10 minutes to prevent free-tier hosts from sleeping."""
+        """Ping self every 3 minutes to prevent free-tier hosts from sleeping."""
         import httpx
 
         render_url = os.environ.get("RENDER_EXTERNAL_URL")
         if not render_url:
             return  # Not on Render, skip
 
-        logger.info("Keep-alive started for %s", render_url)
+        logger.info("Keep-alive started for %s (every 3 min)", render_url)
         while self._running:
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
-                    await client.get(f"{render_url}/health")
-                await asyncio.sleep(600)  # 10 minutes
+                    resp = await client.get(f"{render_url}/health")
+                    logger.debug("Keep-alive ping: %s", resp.status_code)
+                await asyncio.sleep(180)  # 3 minutes
             except asyncio.CancelledError:
                 break
             except Exception:
-                await asyncio.sleep(600)
+                await asyncio.sleep(180)
 
     def start(self, eod_callback, morning_callback):
         """Start the scheduler loop with the given async callbacks."""
