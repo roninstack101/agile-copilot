@@ -409,6 +409,19 @@ async def graph_webhook_notification(request: Request):
             logger.error("Failed to fetch message from Graph: %s", e)
             continue
 
+        # Skip messages sent by this app (bot) or via delegated token (self-loop prevention)
+        from_info = message_data.get("from", {})
+        app_info = from_info.get("application")
+        user_info = from_info.get("user")
+        if app_info and app_info.get("id") == settings.AZURE_CLIENT_ID:
+            logger.info("Skipping message sent by this app (application ID match)")
+            continue
+        # Skip messages from the delegated user (Yash) that contain bot signatures
+        msg_body = message_data.get("body", {}).get("content", "")
+        if any(tag in msg_body for tag in ["Good Morning! Daily Focus", "EOD Reminder", "WIP Task Summary"]):
+            logger.info("Skipping bot-generated message (signature detected)")
+            continue
+
         # Extract metadata and check if it's an EOD
         metadata = extract_metadata(message_data)
         logger.info("Raw HTML from Teams:\n%s", metadata["raw_message"][:500])
