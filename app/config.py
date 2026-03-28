@@ -32,6 +32,10 @@ class Settings(BaseSettings):
         default="",
         description="Public URL for Graph API subscription notifications (e.g. https://your-server.com/api/graph-webhook)",
     )
+    REDIRECT_URI: str = Field(
+        default="",
+        description="OAuth redirect URI for delegated auth (e.g. https://your-server.com/api/auth-callback)",
+    )
 
     # --- Server ---
     HOST: str = Field(default="0.0.0.0", description="Server host")

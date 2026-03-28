@@ -109,8 +109,7 @@ async def login(request: Request):
     """Redirect user to Microsoft login to grant Teams messaging permission."""
     from app.graph_auth import graph_auth
 
-    base_url = str(request.base_url).rstrip("/")
-    redirect_uri = f"{base_url}/api/auth-callback"
+    redirect_uri = settings.REDIRECT_URI or f"{str(request.base_url).rstrip('/')}/api/auth-callback"
     login_url = graph_auth.get_login_url(redirect_uri)
     return RedirectResponse(login_url)
 
@@ -126,8 +125,7 @@ async def auth_callback(request: Request, code: str = "", error: str = ""):
     if not code:
         return HTMLResponse("<h2>No authorization code received</h2>", status_code=400)
 
-    base_url = str(request.base_url).rstrip("/")
-    redirect_uri = f"{base_url}/api/auth-callback"
+    redirect_uri = settings.REDIRECT_URI or f"{str(request.base_url).rstrip('/')}/api/auth-callback"
 
     try:
         await graph_auth.exchange_code(code, redirect_uri)
