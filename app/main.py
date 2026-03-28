@@ -56,19 +56,10 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown logic."""
     logger.info("Agile Copilot starting up")
 
-    # Auto-create Graph API subscription if configured
-    # Wait 5s for server to be fully ready before Graph API validates the webhook
-    if settings.CHAT_ID and settings.WEBHOOK_NOTIFICATION_URL:
-        import asyncio as _asyncio
-        await _asyncio.sleep(15)
-        try:
-            await subscription_manager.create_subscription()
-            subscription_manager.start_auto_renewal()
-            logger.info("Graph API subscription created on startup (auto-renewal enabled)")
-        except Exception as e:
-            logger.warning("Failed to create subscription on startup: %s", e)
-    else:
-        logger.info("Graph subscription not configured — skipping auto-subscribe")
+    # Start auto-renewal if subscription is already active
+    # (subscription is created manually via POST /api/subscribe)
+    subscription_manager.start_auto_renewal()
+    logger.info("Subscription auto-renewal started")
 
     # Start daily scheduler (6PM EOD reminder + 10AM morning summary)
     scheduler.start(
