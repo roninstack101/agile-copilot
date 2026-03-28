@@ -515,6 +515,13 @@ async def _send_teams_message(content: str) -> None:
         resp.raise_for_status()
 
 
+@app.post("/api/test-message")
+async def test_message():
+    """Send a test message to the Teams group chat."""
+    await _send_teams_message("<b>Agile Copilot is live!</b> This is a test message from your AWS server.")
+    return {"status": "ok", "message": "Test message sent"}
+
+
 @app.post("/api/notify-wip")
 async def notify_wip(send: bool = True):
     """
