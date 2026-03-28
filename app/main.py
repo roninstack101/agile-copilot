@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
     # Wait 5s for server to be fully ready before Graph API validates the webhook
     if settings.CHAT_ID and settings.WEBHOOK_NOTIFICATION_URL:
         import asyncio as _asyncio
-        await _asyncio.sleep(5)
+        await _asyncio.sleep(15)
         try:
             await subscription_manager.create_subscription()
             subscription_manager.start_auto_renewal()
