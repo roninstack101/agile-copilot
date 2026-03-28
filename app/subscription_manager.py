@@ -61,6 +61,8 @@ class SubscriptionManager:
                 headers=headers,
                 json=payload,
             )
+            if not response.is_success:
+                logger.error("Subscription error response: %s", response.text)
             response.raise_for_status()
             data = response.json()
 
