@@ -45,8 +45,13 @@ async def resolve_sheet_name(member_name: str) -> str:
             response.raise_for_status()
             data = response.json()
 
+        EXCLUDED_MEMBERS = {"harshil"}
         sheets = [ws["name"] for ws in data.get("value", [])]
         member_lower = member_name.strip().lower()
+
+        if member_lower.split()[0] in EXCLUDED_MEMBERS:
+            logger.info("Member '%s' is excluded — skipping", member_name)
+            return None
 
         # Exact match (case-insensitive)
         for name in sheets:
@@ -79,7 +84,7 @@ async def resolve_sheet_name(member_name: str) -> str:
 
 async def list_all_sheets() -> list[str]:
     """List all worksheet names in the workbook, excluding utility sheets."""
-    EXCLUDE = {"sheet1", "initiatives", "template"}
+    EXCLUDE = {"sheet1", "initiatives", "template", "harshil"}
     try:
         headers = await graph_auth.get_headers()
         url = f"{_workbook_url()}/worksheets"
@@ -103,7 +108,7 @@ async def read_sheet(sheet_name: str | None = None) -> list[list[Any]]:
     """Read the entire used range of the worksheet."""
     sheet = sheet_name or settings.SHEET_NAME
     headers = await graph_auth.get_headers()
-    url = f"{_workbook_url()}/worksheets/{sheet}/usedRange"
+    url = f"{_workbook_url()}/worksheets/{sheet}/usedRange(valuesOnly=true)"
 
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(url, headers=headers)

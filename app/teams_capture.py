@@ -134,13 +134,9 @@ def extract_metadata(payload: dict) -> dict:
 
 def is_eod_message(text: str) -> bool:
     """
-    Check if a message is likely an EOD update.
-    Looks for 'EOD' keyword (case-insensitive) or bullet-point structure.
+    Check if a message is an EOD update.
+    Only triggers on the 'eod' keyword (case-insensitive).
     """
     if not text:
         return False
-    text_lower = text.lower()
-    if "eod" in text_lower:
-        return True
-    # Even without 'EOD' keyword, accept if it has multiple bullet points
-    return validate_eod(text)
+    return "eod" in text.lower()

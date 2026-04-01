@@ -338,23 +338,53 @@ def parse_eod_local(eod_text: str, context: dict) -> list[dict]:
         activity_type = _detect_activity_type(task_text)
 
         # Detect priority and stage
-        priority = _detect_priority(task_text)
+        priority = ""
         stage = _detect_stage(task_text)
 
-        # Clean task name: remove trailing stage keywords (e.g. "— done")
+        # Clean task name: remove progress prefixes like "Worked on", "Working on"
         clean_name = re.sub(
-            r"\s*[—–-]\s*(done|completed|finished|delivered|submitted|sent for review|"
-            r"shared with manager|under review|closed|shipped)\s*$",
+            r"^(worked on|working on|started working on|started on|"
+            r"stared working on|began working on|continuing|continued|"
+            r"work on|worked upon)\s+",
             "",
             task_text,
             flags=re.IGNORECASE,
         ).strip()
+        # Remove trailing: "task — done", "task - completed", "task (done)"
+        clean_name = re.sub(
+            r"\s*[—–\-]\s*(done|completed|finished|delivered|closed|shipped|"
+            r"finalized|published|uploaded|handed over|handover)\s*$",
+            "",
+            clean_name,
+            flags=re.IGNORECASE,
+        )
+        # Remove suffix without dash: "task done", "task completed"
+        clean_name = re.sub(
+            r"\s+(done|completed|finished|delivered|closed|shipped|"
+            r"finalized|published|uploaded)\s*$",
+            "",
+            clean_name,
+            flags=re.IGNORECASE,
+        )
+        # Remove prefix: "completed task", "done - task"
+        clean_name = re.sub(
+            r"^(done|completed|finished|delivered|closed|shipped)\s*[—–\-]?\s*",
+            "",
+            clean_name,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        # Extract parenthetical notes from task name → move to comments
+        bracket_notes = re.findall(r"\(([^)]+)\)", clean_name)
+        clean_name = re.sub(r"\s*\([^)]+\)", "", clean_name).strip()
 
         # Backlog matching
         backlog_match = _fuzzy_match_backlog(clean_name, backlog_list)
 
         # Build comments
         comments_parts = []
+        if bracket_notes:
+            comments_parts.extend(bracket_notes)
         if backlog_match:
             comments_parts.append("From backlog")
         if is_adhoc and not backlog_match:

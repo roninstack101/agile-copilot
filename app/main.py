@@ -708,7 +708,8 @@ async def _send_morning_summary():
                 lines.append(f"{i}. {name}{tag}")
 
             remaining = len(wip_tasks) - len(top_tasks)
-            summary = f"<b>{member}</b> — Top {len(top_tasks)} focus tasks:<br>" + "<br>".join(lines)
+            task_word = "task" if len(top_tasks) == 1 else "tasks"
+            summary = f"<b>{member}</b> — Top {len(top_tasks)} focus {task_word}:<br>" + "<br>".join(lines)
             if remaining > 0:
                 summary += f"<br><i>+{remaining} more WIP tasks</i>"
 

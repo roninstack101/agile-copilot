@@ -11,6 +11,24 @@ import asyncio
 import logging
 from datetime import datetime, time, timedelta, timezone
 
+
+def _is_off_day(dt: datetime) -> bool:
+    """Return True if notifications should NOT be sent on this day.
+
+    Off days:
+    - All Sundays (weekday == 6)
+    - 1st Saturday of the month (weekday == 5, day <= 7)
+    - 3rd Saturday of the month (weekday == 5, 15 < day <= 21)
+    """
+    if dt.weekday() == 6:  # Sunday
+        return True
+    if dt.weekday() == 5:  # Saturday
+        if dt.day <= 7:  # 1st Saturday
+            return True
+        if 15 < dt.day <= 21:  # 3rd Saturday
+            return True
+    return False
+
 logger = logging.getLogger(__name__)
 
 # IST = UTC+5:30
@@ -40,6 +58,11 @@ class Scheduler:
                     fired_today = set()
                     last_date = today_key
                     logger.info("New day detected: %s — reset fired markers", today_key)
+
+                # Skip notifications on Sundays, 1st and 3rd Saturdays
+                if _is_off_day(now):
+                    await asyncio.sleep(30)
+                    continue
 
                 # 6:00 PM EOD reminder (fire once anytime between 6:00–6:30 PM)
                 eod_key = f"eod_{today_key}"

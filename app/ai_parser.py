@@ -245,7 +245,7 @@ def _enrich_with_ai(local_tasks: list[dict], ai_tasks: list[dict]) -> list[dict]
 
         if best_match and best_ratio >= 0.6:
             # Merge: AI fields override local, but keep local's sprint_backlog
-            ENRICH_FIELDS = ["brand", "activity_type", "stage", "priority",
+            ENRICH_FIELDS = ["brand", "activity_type", "stage",
                              "comments", "expected_story_points", "dependency"]
             for field in ENRICH_FIELDS:
                 ai_val = best_match.get(field)
