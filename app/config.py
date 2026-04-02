@@ -101,7 +101,7 @@ BRAND_PARENT = {
 DEDUP_THRESHOLD = 0.85
 
 # Backlog promotion: threshold for matching parsed tasks to backlog items
-BACKLOG_PROMOTION_THRESHOLD = 0.80
+BACKLOG_PROMOTION_THRESHOLD = 0.65
 
 # Microsoft Graph API base URL
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
