@@ -84,7 +84,7 @@ async def resolve_sheet_name(member_name: str) -> str:
 
 async def list_all_sheets() -> list[str]:
     """List all worksheet names in the workbook, excluding utility sheets."""
-    EXCLUDE = {"sheet1", "initiatives", "template", "harshil"}
+    EXCLUDE = {"sheet1", "initiatives", "template", "harshil", "rinal"}
     try:
         headers = await graph_auth.get_headers()
         url = f"{_workbook_url()}/worksheets"
@@ -217,6 +217,10 @@ def _extract_existing_rows(values: list[list[Any]], header_idx: int, header: lis
             "expected_story_points": _safe_int(padded[col_map["expected_sp"]] if "expected_sp" in col_map and col_map["expected_sp"] < len(padded) else 0),
             "actual_story_points": _safe_int(padded[col_map["actual_sp"]] if "actual_sp" in col_map and col_map["actual_sp"] < len(padded) else 0),
         }
+
+        # Fall back to backlog column if sprint_backlog is empty (e.g. Prince's sheet)
+        if not mapped["sprint_backlog"] and mapped["backlog"]:
+            mapped["sprint_backlog"] = mapped["backlog"]
 
         if mapped["sprint_backlog"]:
             mapped["_sheet_row"] = row_idx
