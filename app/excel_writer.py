@@ -476,10 +476,7 @@ def _task_to_row(task: dict, col_map: dict, num_cols: int) -> list:
 
     if "comments" in col_map:
         row[col_map["comments"]] = task.get("comments", "")
-    if "expected_sp" in col_map:
-        row[col_map["expected_sp"]] = task.get("expected_story_points", 2)
-    if "actual_sp" in col_map:
-        row[col_map["actual_sp"]] = task.get("actual_story_points", 0)
+    # Story points are filled manually by team members — never written by the pipeline
 
     return row
 
