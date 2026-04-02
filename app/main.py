@@ -61,10 +61,11 @@ async def lifespan(app: FastAPI):
     subscription_manager.start_auto_renewal()
     logger.info("Subscription auto-renewal started")
 
-    # Start daily scheduler (6PM EOD reminder + 10AM morning summary)
+    # Start daily scheduler (10AM morning summary + 5PM progress report + 6PM EOD reminder)
     scheduler.start(
         eod_callback=_send_eod_reminder,
         morning_callback=_send_morning_summary,
+        progress_callback=_send_progress_report,
     )
 
     yield
@@ -773,6 +774,123 @@ async def morning_summary(send: bool = True):
     except Exception as e:
         logger.error("Morning summary failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Failed to send morning summary: {e}")
+
+
+# ──────────────────────────────────────────────
+# Progress Report
+# ──────────────────────────────────────────────
+
+
+def _progress_bar(actual: int, expected: int, width: int = 10) -> str:
+    """Return a simple text progress bar."""
+    if expected <= 0:
+        return "░" * width
+    pct = min(actual / expected, 1.0)
+    filled = round(pct * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+async def _send_progress_report():
+    """Read all member sheets and send actual vs expected story point progress."""
+    members = await list_all_sheets()
+    if not members:
+        return
+
+    lines = []
+    total_actual = 0
+    total_expected = 0
+
+    for member in members:
+        try:
+            rows = await get_existing_rows(sheet_name=member)
+            # Exclude the total/summary row if present (sprint_backlog contains "total")
+            task_rows = [r for r in rows if "total" not in r.get("sprint_backlog", "").lower()]
+            exp = sum(r.get("expected_story_points", 0) for r in task_rows)
+            act = sum(r.get("actual_story_points", 0) for r in task_rows)
+            closed = sum(1 for r in task_rows if r.get("stage") == "Closed")
+            total_tasks = len(task_rows)
+
+            if exp == 0 and total_tasks == 0:
+                continue
+
+            pct = round((act / exp) * 100) if exp > 0 else 0
+            bar = _progress_bar(act, exp)
+            lines.append(
+                f"<b>{member}</b> — {act}/{exp} SP ({pct}%) {bar} &nbsp;|&nbsp; "
+                f"{closed}/{total_tasks} tasks closed"
+            )
+            total_actual += act
+            total_expected += exp
+        except Exception as e:
+            logger.warning("Failed progress for '%s': %s", member, e)
+
+    if not lines:
+        return
+
+    today = date.today().strftime("%A, %B %d")
+    team_pct = round((total_actual / total_expected) * 100) if total_expected > 0 else 0
+    team_bar = _progress_bar(total_actual, total_expected)
+
+    html = (
+        f"<b>Sprint Progress — {today}</b><br><br>"
+        + "<br>".join(lines)
+        + f"<br><br><b>Team Total — {total_actual}/{total_expected} SP ({team_pct}%) {team_bar}</b>"
+    )
+
+    await _send_teams_message(html)
+    logger.info("Progress report sent for %d members", len(lines))
+
+
+@app.post("/api/progress-report")
+async def progress_report(send: bool = True):
+    """Send sprint progress report (actual vs expected story points) to Teams."""
+    members = await list_all_sheets()
+    if not members:
+        raise HTTPException(status_code=500, detail="Could not list worksheets")
+
+    report_data = []
+    total_actual = 0
+    total_expected = 0
+
+    for member in members:
+        try:
+            rows = await get_existing_rows(sheet_name=member)
+            task_rows = [r for r in rows if "total" not in r.get("sprint_backlog", "").lower()]
+            exp = sum(r.get("expected_story_points", 0) for r in task_rows)
+            act = sum(r.get("actual_story_points", 0) for r in task_rows)
+            closed = sum(1 for r in task_rows if r.get("stage") == "Closed")
+            report_data.append({
+                "member": member,
+                "actual_sp": act,
+                "expected_sp": exp,
+                "pct": round((act / exp) * 100) if exp > 0 else 0,
+                "closed_tasks": closed,
+                "total_tasks": len(task_rows),
+            })
+            total_actual += act
+            total_expected += exp
+        except Exception as e:
+            logger.warning("Failed progress for '%s': %s", member, e)
+
+    if not send:
+        return {
+            "status": "preview",
+            "team_actual_sp": total_actual,
+            "team_expected_sp": total_expected,
+            "data": report_data,
+        }
+
+    try:
+        await _send_progress_report()
+        return {
+            "status": "ok",
+            "team_actual_sp": total_actual,
+            "team_expected_sp": total_expected,
+            "data": report_data,
+        }
+    except Exception as e:
+        logger.error("Progress report failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to send progress report: {e}")
 
 
 # ──────────────────────────────────────────────

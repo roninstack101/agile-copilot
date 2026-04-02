@@ -36,6 +36,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 EOD_REMINDER_TIME = time(18, 0)   # 6:00 PM IST
 MORNING_SUMMARY_TIME = time(10, 0)  # 10:00 AM IST
+PROGRESS_REPORT_TIME = time(17, 0)  # 5:00 PM IST
 
 
 class Scheduler:
@@ -43,7 +44,7 @@ class Scheduler:
         self._task: asyncio.Task | None = None
         self._running = False
 
-    async def _loop(self, eod_callback, morning_callback):
+    async def _loop(self, eod_callback, morning_callback, progress_callback):
         """Main loop — checks time every 30 seconds, fires callbacks at target times."""
         last_date: str = ""
         fired_today: set[str] = set()
@@ -92,6 +93,20 @@ class Scheduler:
                     except Exception as e:
                         logger.error("Morning summary failed: %s", e)
 
+                # 5:00 PM progress report (fire once anytime between 5:00–5:30 PM)
+                progress_key = f"progress_{today_key}"
+                if (
+                    progress_key not in fired_today
+                    and now.time() >= PROGRESS_REPORT_TIME
+                    and now.time() < time(17, 30)
+                ):
+                    fired_today.add(progress_key)
+                    logger.info("Triggering progress report")
+                    try:
+                        await progress_callback()
+                    except Exception as e:
+                        logger.error("Progress report failed: %s", e)
+
                 await asyncio.sleep(30)
 
             except asyncio.CancelledError:
@@ -101,13 +116,13 @@ class Scheduler:
                 logger.error("Scheduler error: %s", e)
                 await asyncio.sleep(60)
 
-    def start(self, eod_callback, morning_callback):
+    def start(self, eod_callback, morning_callback, progress_callback):
         """Start the scheduler loop with the given async callbacks."""
         self._running = True
         self._task = asyncio.create_task(
-            self._loop(eod_callback, morning_callback)
+            self._loop(eod_callback, morning_callback, progress_callback)
         )
-        logger.info("Scheduler started (EOD reminder @ 6PM IST, morning summary @ 10AM IST)")
+        logger.info("Scheduler started (morning summary @ 10AM, progress report @ 5PM, EOD reminder @ 6PM IST)")
 
     def stop(self):
         """Stop the scheduler."""
