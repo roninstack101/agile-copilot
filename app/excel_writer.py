@@ -262,6 +262,19 @@ def _safe_int(val: Any) -> int:
         return 0
 
 
+def _last_data_row(values: list[list[Any]], header_idx: int) -> int:
+    """
+    Return the 1-indexed row number of the last row that contains actual data.
+    Scans backwards to skip trailing blank rows that appear in usedRange due
+    to cell formatting (e.g. Shaily's sheet has formatted-but-empty rows 47-49).
+    """
+    for row_idx in range(len(values) - 1, header_idx, -1):
+        row = values[row_idx]
+        if any(cell is not None and str(cell).strip() not in ("", "None", "False", "TRUE", "FALSE") for cell in row):
+            return row_idx + 1  # convert 0-indexed to 1-indexed
+    return header_idx + 1  # fallback: right after header row
+
+
 def _extract_backlog_with_positions(
     values: list[list[Any]], header_idx: int, col_map: dict
 ) -> list[dict]:
@@ -553,7 +566,8 @@ async def write_tasks(
     total_inserted = 0
 
     # ── Insert new tasks grouped by brand ──
-    end_of_sheet = len(values) + 1  # 1-indexed, after last used row
+    # Use last non-empty row (not len(values)) to skip trailing blank/formatted rows
+    end_of_sheet = _last_data_row(values, header_idx) + 1  # 1-indexed, after last data row
 
     for task in new_tasks:
         try:
@@ -618,58 +632,42 @@ async def _insert_and_write_row(
     sheet_name: str, excel_row: int, values: list, num_cols: int, task: dict | None = None
 ) -> dict:
     """Insert a new row at the given position and write values to it."""
+    import asyncio
+
     end_col = chr(ord("A") + num_cols - 1)
     address = f"A{excel_row}:{end_col}{excel_row}"
+    base = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')"
+    fill_color = _row_fill_color(task)
 
     headers = await graph_auth.get_headers()
 
-    # Step 1: Insert a blank row by shifting existing rows down
-    insert_url = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')/insert"
+    # Step 1: Insert a blank row (must complete before writing values)
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(insert_url, headers=headers, json={"shift": "Down"})
+        resp = await client.post(f"{base}/insert", headers=headers, json={"shift": "Down"})
         resp.raise_for_status()
 
-    # Step 2: Apply formatting based on task stage
-    fill_color = _row_fill_color(task)
+    # Step 2: Write values + all formatting in parallel (independent of each other)
+    async def _patch(url: str, body: dict) -> None:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.patch(url, headers=headers, json=body)
+            if r.status_code >= 400:
+                logger.debug("PATCH %s returned %d", url.split("/range")[1], r.status_code)
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        # Patch background color
-        fill_url = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')/format/fill"
-        resp_fill = await client.patch(fill_url, headers=headers, json={"color": fill_color})
-        if resp_fill.status_code >= 400:
-            logger.debug("Fill format apply returned %d", resp_fill.status_code)
+    results = await asyncio.gather(
+        _patch(base, {"values": [values]}),
+        _patch(f"{base}/format/fill", {"color": fill_color}),
+        _patch(f"{base}/format/font", {"bold": False, "color": "#000000", "italic": False, "size": 11, "name": "Calibri"}),
+        _patch(f"{base}/format", {"wrapText": True, "horizontalAlignment": "Center", "verticalAlignment": "Center"}),
+        return_exceptions=True,
+    )
 
-        # Patch font styling
-        font_url = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')/format/font"
-        resp_font = await client.patch(font_url, headers=headers, json={
-            "bold": False,
-            "color": "#000000",
-            "italic": False,
-            "size": 11,
-            "name": "Calibri"
-        })
-        if resp_font.status_code >= 400:
-            logger.debug("Font format apply returned %d", resp_font.status_code)
-            
-        # Patch alignment and wrapping
-        format_url = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')/format"
-        resp_fmt = await client.patch(format_url, headers=headers, json={
-            "wrapText": True,
-            "horizontalAlignment": "Center",
-            "verticalAlignment": "Center"
-        })
-        if resp_fmt.status_code >= 400:
-            logger.debug("General format apply returned %d", resp_fmt.status_code)
-
-    # Step 3: Write values to the newly inserted row
-    write_url = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')"
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.patch(write_url, headers=headers, json={"values": [values]})
-        resp.raise_for_status()
-        result = resp.json()
+    # Log any unexpected errors but don't fail the whole write
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning("Row %d format/write error (non-fatal): %s", excel_row, r)
 
     logger.info("Inserted and wrote row %d in sheet '%s' (fill=%s)", excel_row, sheet_name, fill_color)
-    return result
+    return {}
 
 
 async def _write_row(sheet_name: str, excel_row: int, values: list, num_cols: int) -> dict:
