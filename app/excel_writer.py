@@ -562,10 +562,6 @@ async def write_tasks(
                 if brand_val:
                     brand_last_row[brand_val] = row_idx + 1  # 1-indexed
 
-    # Track how many rows we've inserted per brand (shifts subsequent positions)
-    rows_inserted: dict[str, int] = {}
-    total_inserted = 0
-
     # ── Insert new tasks grouped by brand ──
     # Use last non-empty row (not len(values)) to skip trailing blank/formatted rows
     end_of_sheet = _last_data_row(values, header_idx) + 1  # 1-indexed, after last data row
@@ -578,29 +574,28 @@ async def write_tasks(
                 task_brand = ""
 
             if task_brand and task_brand in brand_last_row:
-                # Insert after the last row of this brand
-                base_pos = brand_last_row[task_brand]
-                # Adjust for rows we've already inserted above or at this position
-                offset = sum(
-                    cnt for b, cnt in rows_inserted.items()
-                    if brand_last_row.get(b, end_of_sheet) <= base_pos
-                )
-                insert_pos = base_pos + offset + 1  # +1 = after the last row
-
-                await _insert_and_write_row(sheet, insert_pos, row_values, num_cols, task=task)
-                rows_inserted[task_brand] = rows_inserted.get(task_brand, 0) + 1
-                # Update the last row for this brand so next same-brand task goes below
-                brand_last_row[task_brand] = base_pos + rows_inserted[task_brand]
-                total_inserted += 1
+                # Insert directly after this brand's current last row
+                insert_pos = brand_last_row[task_brand] + 1
             else:
-                # No existing brand rows → append at end
-                append_pos = end_of_sheet + total_inserted
-                await _insert_and_write_row(sheet, append_pos, row_values, num_cols, task=task)
-                if task_brand:
-                    brand_last_row[task_brand] = append_pos
-                    rows_inserted[task_brand] = rows_inserted.get(task_brand, 0) + 1
-                total_inserted += 1
+                # No existing brand section → append at end of sheet
+                insert_pos = end_of_sheet
 
+            await _insert_and_write_row(sheet, insert_pos, row_values, num_cols, task=task)
+
+            # Every insert shifts all rows at or after insert_pos down by 1
+            for b in list(brand_last_row.keys()):
+                if brand_last_row[b] >= insert_pos:
+                    brand_last_row[b] += 1
+            if end_of_sheet >= insert_pos:
+                end_of_sheet += 1
+
+            # Mark the newly inserted row as this brand's last row
+            brand_last_row[task_brand] = insert_pos
+
+            logger.info(
+                "Inserted '%s' (brand='%s') at row %d",
+                task.get("sprint_backlog", ""), task_brand or "(none)", insert_pos,
+            )
             results["appended"] += 1
         except Exception as e:
             logger.error("Failed to insert task '%s' in '%s': %s",
