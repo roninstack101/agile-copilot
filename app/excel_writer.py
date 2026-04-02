@@ -465,13 +465,14 @@ def _task_to_row(task: dict, col_map: dict, num_cols: int) -> list:
         row[col_map["priority"]] = task.get("priority", "Medium")
 
     # Stage → expand into WIP / Sent for Approval / Closed columns
+    # Write "" for inactive columns (blank = unchecked) so rows match existing sheet style
     stage = task.get("stage", "WIP")
     if "wip" in col_map:
-        row[col_map["wip"]] = True if stage == "WIP" else False
+        row[col_map["wip"]] = True if stage == "WIP" else ""
     if "sent_for_approval" in col_map:
-        row[col_map["sent_for_approval"]] = True if stage == "Sent for Approval" else False
+        row[col_map["sent_for_approval"]] = True if stage == "Sent for Approval" else ""
     if "closed" in col_map:
-        row[col_map["closed"]] = True if stage == "Closed" else False
+        row[col_map["closed"]] = True if stage == "Closed" else ""
 
     if "comments" in col_map:
         row[col_map["comments"]] = task.get("comments", "")
