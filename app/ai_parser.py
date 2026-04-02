@@ -249,7 +249,7 @@ def _enrich_with_ai(local_tasks: list[dict], ai_tasks: list[dict]) -> list[dict]
                              "comments", "expected_story_points", "dependency"]
             for field in ENRICH_FIELDS:
                 ai_val = best_match.get(field)
-                if ai_val and str(ai_val).strip() and str(ai_val) != "0":
+                if ai_val and str(ai_val).strip() and str(ai_val) not in ("0", "Unknown", "unknown", "N/A", "n/a", "None", "none"):
                     # For stage: if local parser detected "Sent for Approval"
                     # (explicit review/approval keywords), don't let AI
                     # override to "Closed" — the approval signal is more specific

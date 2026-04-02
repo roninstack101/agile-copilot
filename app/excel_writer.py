@@ -559,6 +559,8 @@ async def write_tasks(
         try:
             row_values = _task_to_row(task, col_map, num_cols)
             task_brand = task.get("brand", "").strip().lower()
+            if task_brand in ("unknown", "n/a", "none"):
+                task_brand = ""
 
             if task_brand and task_brand in brand_last_row:
                 # Insert after the last row of this brand
