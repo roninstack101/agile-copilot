@@ -34,9 +34,10 @@ logger = logging.getLogger(__name__)
 # IST = UTC+5:30
 IST = timezone(timedelta(hours=5, minutes=30))
 
+TODO_SUMMARY_TIME = time(9, 30)    # 9:30 AM IST
+MORNING_SUMMARY_TIME = time(10, 15)  # 10:15 AM IST
+PROGRESS_REPORT_TIME = time(11, 30)  # 11:30 AM IST
 EOD_REMINDER_TIME = time(18, 0)   # 6:00 PM IST
-MORNING_SUMMARY_TIME = time(10, 0)  # 10:00 AM IST
-PROGRESS_REPORT_TIME = time(17, 0)  # 5:00 PM IST
 
 
 class Scheduler:
@@ -44,7 +45,7 @@ class Scheduler:
         self._task: asyncio.Task | None = None
         self._running = False
 
-    async def _loop(self, eod_callback, morning_callback, progress_callback):
+    async def _loop(self, eod_callback, morning_callback, progress_callback, todo_callback):
         """Main loop — checks time every 30 seconds, fires callbacks at target times."""
         last_date: str = ""
         fired_today: set[str] = set()
@@ -65,7 +66,49 @@ class Scheduler:
                     await asyncio.sleep(30)
                     continue
 
-                # 6:00 PM EOD reminder (fire once anytime between 6:00–6:30 PM)
+                # 9:30 AM todo summary
+                todo_key = f"todo_{today_key}"
+                if (
+                    todo_key not in fired_today
+                    and now.time() >= TODO_SUMMARY_TIME
+                    and now.time() < time(10, 0)
+                ):
+                    fired_today.add(todo_key)
+                    logger.info("Triggering todo summary")
+                    try:
+                        await todo_callback()
+                    except Exception as e:
+                        logger.error("Todo summary failed: %s", e)
+
+                # 10:15 AM agile update reminder
+                morning_key = f"morning_{today_key}"
+                if (
+                    morning_key not in fired_today
+                    and now.time() >= MORNING_SUMMARY_TIME
+                    and now.time() < time(10, 45)
+                ):
+                    fired_today.add(morning_key)
+                    logger.info("Triggering agile update reminder")
+                    try:
+                        await morning_callback()
+                    except Exception as e:
+                        logger.error("Agile update reminder failed: %s", e)
+
+                # 11:30 AM progress report
+                progress_key = f"progress_{today_key}"
+                if (
+                    progress_key not in fired_today
+                    and now.time() >= PROGRESS_REPORT_TIME
+                    and now.time() < time(12, 0)
+                ):
+                    fired_today.add(progress_key)
+                    logger.info("Triggering progress report")
+                    try:
+                        await progress_callback()
+                    except Exception as e:
+                        logger.error("Progress report failed: %s", e)
+
+                # 6:00 PM EOD reminder
                 eod_key = f"eod_{today_key}"
                 if (
                     eod_key not in fired_today
@@ -79,34 +122,6 @@ class Scheduler:
                     except Exception as e:
                         logger.error("EOD reminder failed: %s", e)
 
-                # 10:00 AM morning summary (fire once anytime between 10:00–10:30 AM)
-                morning_key = f"morning_{today_key}"
-                if (
-                    morning_key not in fired_today
-                    and now.time() >= MORNING_SUMMARY_TIME
-                    and now.time() < time(10, 30)
-                ):
-                    fired_today.add(morning_key)
-                    logger.info("Triggering morning WIP summary")
-                    try:
-                        await morning_callback()
-                    except Exception as e:
-                        logger.error("Morning summary failed: %s", e)
-
-                # 5:00 PM progress report (fire once anytime between 5:00–5:30 PM)
-                progress_key = f"progress_{today_key}"
-                if (
-                    progress_key not in fired_today
-                    and now.time() >= PROGRESS_REPORT_TIME
-                    and now.time() < time(17, 30)
-                ):
-                    fired_today.add(progress_key)
-                    logger.info("Triggering progress report")
-                    try:
-                        await progress_callback()
-                    except Exception as e:
-                        logger.error("Progress report failed: %s", e)
-
                 await asyncio.sleep(30)
 
             except asyncio.CancelledError:
@@ -116,13 +131,13 @@ class Scheduler:
                 logger.error("Scheduler error: %s", e)
                 await asyncio.sleep(60)
 
-    def start(self, eod_callback, morning_callback, progress_callback):
+    def start(self, eod_callback, morning_callback, progress_callback, todo_callback):
         """Start the scheduler loop with the given async callbacks."""
         self._running = True
         self._task = asyncio.create_task(
-            self._loop(eod_callback, morning_callback, progress_callback)
+            self._loop(eod_callback, morning_callback, progress_callback, todo_callback)
         )
-        logger.info("Scheduler started (morning summary @ 10AM, progress report @ 5PM, EOD reminder @ 6PM IST)")
+        logger.info("Scheduler started (todo @ 9:30AM, agile reminder @ 10:15AM, progress @ 11:30AM, EOD @ 6PM IST)")
 
     def stop(self):
         """Stop the scheduler."""

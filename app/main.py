@@ -61,11 +61,12 @@ async def lifespan(app: FastAPI):
     subscription_manager.start_auto_renewal()
     logger.info("Subscription auto-renewal started")
 
-    # Start daily scheduler (10AM morning summary + 5PM progress report + 6PM EOD reminder)
+    # Start daily scheduler (9:30 todo, 10:15 agile reminder, 11:30 progress, 6PM EOD)
     scheduler.start(
         eod_callback=_send_eod_reminder,
-        morning_callback=_send_morning_summary,
+        morning_callback=_send_agile_reminder,
         progress_callback=_send_progress_report,
+        todo_callback=_send_morning_summary,
     )
 
     yield
@@ -682,6 +683,19 @@ async def _ai_prioritize_tasks(member: str, wip_tasks: list[dict]) -> list[dict]
         return wip_tasks[:5]
 
 
+async def _send_agile_reminder():
+    """Send a reminder to update the agile sheet."""
+    members = await list_all_sheets()
+    member_list = ", ".join(members) if members else "Team"
+    html = (
+        f"<b>Agile Update Reminder</b><br><br>"
+        f"Hey {member_list}! Please update your agile sheet with today's tasks and progress.<br><br>"
+        "<i>Make sure to mark completed tasks as Closed and update story points.</i>"
+    )
+    await _send_teams_message(html)
+    logger.info("Agile update reminder sent")
+
+
 async def _send_morning_summary():
     """Build and send the AI-prioritized morning WIP summary."""
     members = await list_all_sheets()
@@ -732,9 +746,19 @@ async def _send_morning_summary():
     logger.info("Morning summary sent for %d members", len(all_summaries))
 
 
+@app.post("/api/agile-reminder")
+async def agile_reminder():
+    """Manually trigger the 10:15 AM agile update reminder."""
+    try:
+        await _send_agile_reminder()
+        return {"status": "ok", "message": "Agile update reminder sent"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed: {e}")
+
+
 @app.post("/api/morning-summary")
 async def morning_summary(send: bool = True):
-    """Manually trigger the 10 AM morning summary. Use ?send=false to preview."""
+    """Manually trigger the 9:30 AM todo summary. Use ?send=false to preview."""
     members = await list_all_sheets()
     if not members:
         raise HTTPException(status_code=500, detail="Could not list worksheets")
