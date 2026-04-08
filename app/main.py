@@ -29,7 +29,7 @@ from app.validator import validate_all
 from app.excel_writer import (
     write_tasks, resolve_sheet_name,
     read_sheet_context, update_backlog_row,
-    list_all_sheets, get_existing_rows,
+    list_all_sheets, get_existing_rows, write_backlog_items,
 )
 from app.task_router import route_tasks
 from app.subscription_manager import subscription_manager
@@ -160,6 +160,45 @@ class PipelineResult(BaseModel):
 # ──────────────────────────────────────────────
 # EOD processing pipeline
 # ──────────────────────────────────────────────
+
+
+async def _process_backlog_command(sender: str, message: str) -> None:
+    """
+    Handle /backlog command from Teams.
+    Parses items from the message and appends them to the sender's Backlog column.
+
+    Supported formats:
+        /backlog Brand Film
+        /backlog
+        - Item 1
+        - Item 2
+    """
+    # Strip the /backlog prefix and split into lines
+    body = message[len("/backlog"):].strip()
+    lines = [l.strip().lstrip("-•*1234567890.)").strip() for l in body.splitlines()]
+    items = [l for l in lines if l]
+
+    # If no items on separate lines, treat the rest of the first line as one item
+    if not items and body:
+        items = [body]
+
+    if not items:
+        logger.info("/backlog from '%s' had no items", sender)
+        return
+
+    sheet_name = await resolve_sheet_name(sender)
+    if not sheet_name:
+        logger.warning("/backlog: no sheet found for '%s'", sender)
+        return
+
+    try:
+        written = await write_backlog_items(sheet_name, items)
+        logger.info("/backlog: wrote %d items to '%s' sheet for '%s'", written, sheet_name, sender)
+        reply = f"<b>Backlog updated</b> — added {written} item(s) to {sheet_name}'s backlog:<br>" + \
+                "<br>".join(f"&bull; {i}" for i in items if i.strip())
+        await _send_teams_message(reply)
+    except Exception as e:
+        logger.error("/backlog write failed for '%s': %s", sender, e)
 
 
 async def _process_eod(sender: str, clean_message: str, timestamp: str) -> PipelineResult:
@@ -416,22 +455,32 @@ async def graph_webhook_notification(request: Request):
             logger.info("Skipping bot-generated message (signature detected)")
             continue
 
-        # Extract metadata and check if it's an EOD
+        # Extract metadata
         metadata = extract_metadata(message_data)
         logger.info("Raw HTML from Teams:\n%s", metadata["raw_message"][:500])
         logger.info("Clean text after stripping:\n%s", metadata["clean_message"])
-        if not is_eod_message(metadata["clean_message"]):
-            logger.info("Message from '%s' is not an EOD — skipping", metadata["sender"])
+
+        clean = metadata["clean_message"].strip()
+        sender = metadata["sender"]
+
+        # ── /backlog command ──
+        if clean.lower().startswith("/backlog"):
+            await _process_backlog_command(sender, clean)
             continue
 
-        if not validate_eod(metadata["clean_message"]):
-            logger.info("Message from '%s' has no valid tasks — skipping", metadata["sender"])
+        # ── EOD check ──
+        if not is_eod_message(clean):
+            logger.info("Message from '%s' is not an EOD — skipping", sender)
+            continue
+
+        if not validate_eod(clean):
+            logger.info("Message from '%s' has no valid tasks — skipping", sender)
             continue
 
         # Process the EOD
         result = await _process_eod(
-            metadata["sender"],
-            metadata["clean_message"],
+            sender,
+            clean,
             metadata["timestamp"],
         )
         logger.info(

@@ -346,6 +346,56 @@ async def read_sheet_context(sheet_name: str | None = None) -> dict:
     }
 
 
+async def write_backlog_items(sheet_name: str, items: list[str]) -> int:
+    """
+    Append items to the Backlog column of the sheet.
+    Finds the first empty cell in the Backlog column after existing entries and writes there.
+    Returns the number of items written.
+    """
+    values = await read_sheet(sheet_name)
+    if not values:
+        raise ValueError(f"Sheet '{sheet_name}' is empty")
+
+    header_idx, header = _detect_header_row(values)
+    col_map = _build_column_map(header)
+    bl_col = col_map.get("backlog")
+    if bl_col is None:
+        raise ValueError(f"No 'Backlog' column found in sheet '{sheet_name}'")
+
+    # Find the last row that has any content in the backlog column
+    last_backlog_row = header_idx  # 0-indexed
+    for row_idx in range(header_idx + 1, len(values)):
+        row = values[row_idx]
+        if bl_col < len(row) and row[bl_col] and str(row[bl_col]).strip():
+            last_backlog_row = row_idx
+
+    # Also find the overall last data row so we don't write in the middle of the sheet
+    last_data_row = _last_data_row(values, header_idx)  # 1-indexed
+
+    # Write each item on a new row starting after the last backlog entry
+    # Use the max of last_backlog_row and last_data_row to avoid gaps
+    start_excel_row = max(last_backlog_row + 1, last_data_row) + 1  # 1-indexed
+
+    bl_letter = chr(ord("A") + bl_col)
+    headers_auth = await graph_auth.get_headers()
+
+    written = 0
+    for i, item in enumerate(items):
+        item = item.strip()
+        if not item:
+            continue
+        excel_row = start_excel_row + written
+        address = f"{bl_letter}{excel_row}:{bl_letter}{excel_row}"
+        url = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.patch(url, headers=headers_auth, json={"values": [[item]]})
+            resp.raise_for_status()
+        written += 1
+        logger.info("Wrote backlog item '%s' to %s%d in sheet '%s'", item, bl_letter, excel_row, sheet_name)
+
+    return written
+
+
 async def clear_backlog_cell(sheet_name: str, excel_row: int, col_idx: int) -> None:
     """PATCH a single cell to empty string, clearing the backlog entry after promotion."""
     col_letter = chr(ord("A") + col_idx)
