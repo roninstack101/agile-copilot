@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 
 _EMBED_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-embedding-exp-03-07:embedContent"
+    "gemini-embedding-2-preview:embedContent"
 )
 _BATCH_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-embedding-exp-03-07:batchEmbedContents"
+    "gemini-embedding-2-preview:batchEmbedContents"
 )
 
 # Simple in-memory cache so the same task text isn't re-embedded on every call.
@@ -55,7 +55,7 @@ async def embed_text(text: str) -> list[float] | None:
 
     try:
         payload = {
-            "model": "models/gemini-embedding-exp-03-07",
+            "model": "models/gemini-embedding-2-preview",
             "content": {"parts": [{"text": text}]},
         }
         async with httpx.AsyncClient(timeout=15) as client:
@@ -100,7 +100,7 @@ async def embed_texts(texts: list[str]) -> dict[str, list[float]]:
         payload = {
             "requests": [
                 {
-                    "model": "models/gemini-embedding-exp-03-07",
+                    "model": "models/gemini-embedding-2-preview",
                     "content": {"parts": [{"text": t}]},
                 }
                 for t in to_fetch
