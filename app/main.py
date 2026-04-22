@@ -592,23 +592,27 @@ async def notify_wip(send: bool = True):
             if not wip_tasks:
                 continue
 
+            # AI picks the top 5 most important tasks
+            top_tasks = await _ai_prioritize_tasks(member, wip_tasks)
+            remaining = len(wip_tasks) - len(top_tasks)
+
             lines = []
             task_list = []
-            for t in wip_tasks:
+            for i, t in enumerate(top_tasks, 1):
                 brand = t.get("brand", "")
                 activity = t.get("activity_type", "")
                 priority = t.get("priority", "Medium")
                 name = t.get("sprint_backlog", "")
                 tag = f" ({brand} - {activity})" if brand and activity else f" ({brand or activity})" if brand or activity else ""
-                lines.append(f"&bull; {name}{tag} — {priority}")
+                lines.append(f"{i}. {name}{tag} — {priority}")
                 task_list.append({"name": name, "brand": brand, "activity_type": activity, "priority": priority})
 
-            summary = (
-                f"<b>{member}</b> — {len(wip_tasks)} task(s) in progress<br>"
-                + "<br>".join(lines)
-            )
+            summary = f"<b>{member}</b> — Top {len(top_tasks)} of {len(wip_tasks)} WIP tasks:<br>" + "<br>".join(lines)
+            if remaining > 0:
+                summary += f"<br><i>+{remaining} more WIP tasks</i>"
+
             all_summaries.append(summary)
-            member_data.append({"member": member, "wip_count": len(wip_tasks), "tasks": task_list})
+            member_data.append({"member": member, "wip_count": len(wip_tasks), "top_tasks": task_list})
         except Exception as e:
             logger.warning("Failed to read WIP for '%s': %s", member, e)
 
@@ -618,6 +622,7 @@ async def notify_wip(send: bool = True):
     html = (
         "<b>WIP Task Summary</b><br><br>"
         + "<br><br>".join(all_summaries)
+        + "<br><br><i>Top 5 prioritized by AI based on priority, effort, and project balance.</i>"
     )
 
     if not send:
