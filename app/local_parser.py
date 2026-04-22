@@ -182,19 +182,26 @@ def _estimate_story_points(task_name: str, quantity: int) -> int:
     return max(1, min(13, total))
 
 
-def _fuzzy_match_backlog(task_name: str, backlog_list: list[str]) -> str | None:
+async def _match_backlog(task_name: str, backlog_list: list[str]) -> str | None:
     """
-    Smart fuzzy match against backlog items.
-    Uses substring matching + word overlap to catch cases like:
-      - "WEMS Catalogue draft" matching backlog "Catalogue" (under WEMS brand)
-      - "Brand Identity Setup Testing" matching "Brand Identity Setup"
+    Match a task name against backlog items using semantic similarity.
+    Falls back to word-overlap if embedding API is unavailable.
     """
     if not backlog_list:
         return None
 
+    # --- Semantic match ---
+    try:
+        from app.embeddings import find_best_match
+        matched, _ = await find_best_match(task_name, backlog_list, threshold=0.80)
+        if matched:
+            return matched
+    except Exception:
+        pass
+
+    # --- Word-overlap fallback ---
     task_lower = task_name.lower().strip()
     task_words = set(task_lower.split())
-    # Remove very common filler words from comparison
     filler = {"the", "a", "an", "of", "for", "and", "in", "on", "to", "x1", "x2", "x3"}
     task_words -= filler
 
@@ -205,17 +212,10 @@ def _fuzzy_match_backlog(task_name: str, backlog_list: list[str]) -> str | None:
         item_lower = item.lower().strip()
         item_words = set(item_lower.split()) - filler
 
-        # Method 1: Substring containment (either direction)
         if task_lower in item_lower or item_lower in task_lower:
-            # Guard: backlog item must be at least 40% of task name length
-            if len(item_lower) >= len(task_lower) * 0.4:
-                score = 0.95
-            else:
-                score = 0.5
-        # Method 2: Word overlap — what fraction of backlog words appear in task?
+            score = 0.95 if len(item_lower) >= len(task_lower) * 0.4 else 0.5
         elif item_words and task_words:
-            overlap = len(item_words & task_words)
-            score = overlap / len(item_words)  # % of backlog words matched
+            score = len(item_words & task_words) / len(item_words)
         else:
             score = 0.0
 
@@ -223,10 +223,7 @@ def _fuzzy_match_backlog(task_name: str, backlog_list: list[str]) -> str | None:
             best_score = score
             best_match = item
 
-    # Require at least 70% word overlap or strong substring match
-    if best_match and best_score >= 0.7:
-        return best_match
-    return None
+    return best_match if best_score >= 0.7 else None
 
 
 def _is_bullet_line(text: str) -> bool:
@@ -241,7 +238,7 @@ def _smart_title(text: str) -> str:
     return text
 
 
-def parse_eod_local(eod_text: str, context: dict) -> list[dict]:
+async def parse_eod_local(eod_text: str, context: dict) -> list[dict]:
     """
     Parse an EOD message using regex / keyword rules. No AI needed.
 
@@ -379,7 +376,7 @@ def parse_eod_local(eod_text: str, context: dict) -> list[dict]:
         clean_name = re.sub(r"\s*\([^)]+\)", "", clean_name).strip()
 
         # Backlog matching
-        backlog_match = _fuzzy_match_backlog(clean_name, backlog_list)
+        backlog_match = await _match_backlog(clean_name, backlog_list)
 
         # Build comments
         comments_parts = []

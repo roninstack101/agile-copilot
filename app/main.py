@@ -301,7 +301,7 @@ async def _process_eod(sender: str, clean_message: str, timestamp: str) -> Pipel
         )
 
     # Step 3: Validate
-    new_tasks, update_tasks = validate_all(tasks, existing_rows, backlog, sprint_end)
+    new_tasks, update_tasks = await validate_all(tasks, existing_rows, backlog, sprint_end)
 
     logger.info("After validation: %d new tasks, %d updates", len(new_tasks), len(update_tasks))
 
@@ -527,8 +527,8 @@ async def create_subscription():
 # ──────────────────────────────────────────────
 
 
-async def _send_teams_message(content: str) -> None:
-    """Send a message to the Teams group chat.
+async def _send_teams_message(content: str, chat_id: str | None = None) -> None:
+    """Send a message to a Teams group chat.
 
     Uses delegated (user) token first — this works for group chats.
     Falls back to app-only token if delegated is not available.
@@ -537,27 +537,32 @@ async def _send_teams_message(content: str) -> None:
     from app.graph_auth import graph_auth
     from app.config import GRAPH_BASE_URL
 
-    if not settings.CHAT_ID:
+    target = chat_id or settings.CHAT_ID
+    if not target:
         raise ValueError("CHAT_ID not configured")
 
-    url = f"{GRAPH_BASE_URL}/chats/{settings.CHAT_ID}/messages"
+    url = f"{GRAPH_BASE_URL}/chats/{target}/messages"
     payload = {"body": {"contentType": "html", "content": content}}
 
-    # Try delegated token first (works for group chats without bot installation)
     user_headers = await graph_auth.get_user_headers()
     if user_headers:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(url, headers=user_headers, json=payload)
             resp.raise_for_status()
-            logger.info("Teams message sent via delegated token")
+            logger.info("Teams message sent via delegated token (chat=%s)", target)
             return
 
-    # Fall back to app-only token
     logger.warning("No delegated token — falling back to app-only token (may 403 on group chats)")
     headers = await graph_auth.get_headers()
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
+
+
+async def _send_agile_message(content: str) -> None:
+    """Send to the agile group chat (AGILE_CHAT_ID), falling back to the main chat."""
+    chat_id = settings.AGILE_CHAT_ID or settings.CHAT_ID
+    await _send_teams_message(content, chat_id=chat_id)
 
 
 @app.post("/api/test-message")
@@ -611,7 +616,7 @@ async def notify_wip(send: bool = True):
         return {"status": "ok", "message": "No WIP tasks found for any member", "data": []}
 
     html = (
-        "<b>Pending WIP Tasks</b><br><br>"
+        "<b>WIP Task Summary</b><br><br>"
         + "<br><br>".join(all_summaries)
     )
 
@@ -619,7 +624,7 @@ async def notify_wip(send: bool = True):
         return {"status": "preview", "members": len(member_data), "data": member_data, "html": html}
 
     try:
-        await _send_teams_message(html)
+        await _send_agile_message(html)
         logger.info("WIP notification sent for %d members", len(all_summaries))
         return {"status": "ok", "members_notified": len(all_summaries), "data": member_data}
     except Exception as e:
@@ -736,12 +741,8 @@ async def _send_agile_reminder():
     """Send a reminder to update the agile sheet."""
     members = await list_all_sheets()
     member_list = ", ".join(members) if members else "Team"
-    html = (
-        f"<b>Agile Update Reminder</b><br><br>"
-        f"Hey {member_list}! Please update your agile sheet with today's tasks and progress.<br><br>"
-        "<i>Make sure to mark completed tasks as Closed and update story points.</i>"
-    )
-    await _send_teams_message(html)
+    html = f"<b>Agile Update Reminder</b> — Hey {member_list}! Please update your agile sheet."
+    await _send_agile_message(html)
     logger.info("Agile update reminder sent")
 
 
@@ -791,7 +792,7 @@ async def _send_morning_summary():
         + "<br><br><i>Prioritized by AI based on effort, priority, and project balance.</i>"
     )
 
-    await _send_teams_message(html)
+    await _send_agile_message(html)
     logger.info("Morning summary sent for %d members", len(all_summaries))
 
 
@@ -910,7 +911,7 @@ async def _send_progress_report():
         + f"<br><br><b>Team Total — {total_actual}/{total_expected} SP ({team_pct}%) {team_bar}</b>"
     )
 
-    await _send_teams_message(html)
+    await _send_agile_message(html)
     logger.info("Progress report sent for %d members", len(lines))
 
 

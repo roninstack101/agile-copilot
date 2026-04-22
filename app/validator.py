@@ -39,22 +39,20 @@ def _task_target_section(task: dict) -> str | None:
     return brand if brand else None
 
 
-def deduplicate(
+async def deduplicate(
     tasks: list[dict], existing_rows: list[dict]
 ) -> tuple[list[dict], list[dict]]:
     """
-    Compare parsed tasks against existing sheet rows for the same member.
-    Uses fuzzy string matching (Levenshtein ratio >= DEDUP_THRESHOLD).
-
-    Section-aware: when multiple rows match at similar ratios, prefer the one
-    in a compatible section (e.g. a brandless task prefers non-brand rows).
+    Compare parsed tasks against existing sheet rows.
+    Uses semantic similarity (embeddings) with fuzzy fallback.
 
     Returns:
         (new_tasks, update_tasks)
-        - new_tasks: tasks to append as new rows
-        - update_tasks: tasks that match existing rows (include row index for update)
     """
+    from app.embeddings import find_best_match
+
     brand_sections = {b.lower() for b in KNOWN_BRANDS} | {b.lower() for b in BRAND_PARENT}
+    existing_names = [r.get("sprint_backlog", "") for r in existing_rows]
 
     new_tasks = []
     update_tasks = []
@@ -63,84 +61,78 @@ def deduplicate(
         task_name = task.get("sprint_backlog", "")
         target_section = _task_target_section(task)
 
-        # Tasks with quantity markers (x1, x2) are explicitly new instances —
-        # skip dedup so "Reel shoot x1" today doesn't merge with last week's
-        comments = task.get("comments", "")
-        if "Quantity:" in comments:
+        # Quantity-marked tasks are always new instances — skip dedup
+        if "Quantity:" in task.get("comments", ""):
             new_tasks.append(task)
-            logger.info("Skipping dedup for '%s' (has quantity marker)", task_name)
+            logger.info("Skipping dedup for '%s' (quantity marker)", task_name)
             continue
 
-        # Collect all matches above threshold
-        # Include Closed/Sent for Approval rows — matching them prevents duplicates.
-        # We just won't regress their stage during the merge step.
-        candidates = []
-        for idx, existing in enumerate(existing_rows):
-            existing_name = existing.get("sprint_backlog", "")
-            ratio = fuzz.ratio(task_name.lower(), existing_name.lower()) / 100.0
-            if ratio >= DEDUP_THRESHOLD:
-                candidates.append((ratio, idx, existing))
+        # --- Semantic match ---
+        matched_name, score = await find_best_match(
+            task_name, existing_names, threshold=0.82
+        )
 
+        # --- Fuzzy fallback if embeddings unavailable ---
+        if matched_name is None:
+            best_ratio = 0.0
+            for name in existing_names:
+                ratio = fuzz.ratio(task_name.lower(), name.lower()) / 100.0
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    matched_name = name if ratio >= DEDUP_THRESHOLD else None
+            score = best_ratio
+
+        if matched_name is None:
+            new_tasks.append(task)
+            continue
+
+        # Find the matching row (prefer section-compatible if multiple close scores)
+        candidates = [
+            (idx, r) for idx, r in enumerate(existing_rows)
+            if r.get("sprint_backlog") == matched_name
+        ]
         if not candidates:
             new_tasks.append(task)
             continue
 
-        # Pick best candidate, preferring section-compatible match
-        best_match = None
-        for ratio, idx, existing in sorted(candidates, key=lambda c: -c[0]):
-            row_section = existing.get("_section", "")
+        # Section-aware pick
+        row_idx, existing = candidates[0]
+        for idx, r in candidates:
+            row_section = r.get("_section", "")
+            if target_section and row_section == target_section:
+                row_idx, existing = idx, r
+                break
+            if not target_section and row_section not in brand_sections:
+                row_idx, existing = idx, r
+                break
 
-            if target_section:
-                # Task has a brand -- prefer match in that brand's section
-                if row_section == target_section:
-                    best_match = (ratio, idx, existing)
-                    break
-            else:
-                # Brandless task -- prefer match NOT in a brand section
-                if row_section not in brand_sections:
-                    best_match = (ratio, idx, existing)
-                    break
-
-        # Fall back to highest ratio if no section-compatible match
-        if not best_match:
-            best_match = max(candidates, key=lambda c: c[0])
-
-        best_ratio, row_idx, existing = best_match
-
-        # Merge: update the stage/comments of the existing row
-        # Never regress stage: Closed > Sent for Approval > WIP
-        merged = {**existing}
+        # Merge — never regress stage
         STAGE_RANK = {"WIP": 0, "Sent for Approval": 1, "Closed": 2}
+        merged = {**existing}
         existing_stage = existing.get("stage", DEFAULT_STAGE)
         new_stage = task.get("stage", DEFAULT_STAGE)
-        if STAGE_RANK.get(new_stage, 0) >= STAGE_RANK.get(existing_stage, 0):
-            merged["stage"] = new_stage
-        else:
-            merged["stage"] = existing_stage
+        merged["stage"] = (
+            new_stage
+            if STAGE_RANK.get(new_stage, 0) >= STAGE_RANK.get(existing_stage, 0)
+            else existing_stage
+        )
         merged["priority"] = task.get("priority", existing.get("priority", DEFAULT_PRIORITY))
         if task.get("comments"):
-            old_comments = existing.get("comments", "")
-            if old_comments:
-                merged["comments"] = f"{old_comments}; Updated: {task['comments']}"
-            else:
-                merged["comments"] = task["comments"]
+            old = existing.get("comments", "")
+            merged["comments"] = f"{old}; Updated: {task['comments']}" if old else task["comments"]
         if task.get("dependency"):
             merged["dependency"] = task["dependency"]
         merged["_row_index"] = row_idx
         if "_sheet_row" in existing:
             merged["_sheet_row"] = existing["_sheet_row"]
+
         update_tasks.append(merged)
         logger.info(
-            "Dedup match: '%s' ~ '%s' (%.0f%%, section=%s)",
-            task_name,
-            existing.get("sprint_backlog"),
-            best_ratio * 100,
-            existing.get("_section", "?"),
+            "Dedup match: '%s' → '%s' (score=%.2f)",
+            task_name, existing.get("sprint_backlog"), score,
         )
 
-    logger.info(
-        "Dedup result: %d new, %d updates", len(new_tasks), len(update_tasks)
-    )
+    logger.info("Dedup result: %d new, %d updates", len(new_tasks), len(update_tasks))
     return new_tasks, update_tasks
 
 
@@ -149,43 +141,42 @@ def deduplicate(
 # ──────────────────────────────────────────────
 
 
-def match_backlog(tasks: list[dict], backlog: list[str]) -> list[dict]:
+async def match_backlog(tasks: list[dict], backlog: list[str]) -> list[dict]:
     """
-    If a parsed task fuzzy-matches a backlog item, copy the exact backlog name
-    and add 'From backlog' to comments.
+    If a parsed task semantically matches a backlog item, tag it with 'From backlog'.
+    Uses semantic similarity with fuzzy fallback.
+    """
+    from app.embeddings import find_best_match
 
-    Uses fuzz.ratio (full string similarity) not partial_ratio, to avoid
-    short backlog items like "Catalogue" matching long task names like
-    "Schneider Catalogue changes".
-    """
     if not backlog:
         return tasks
 
     for task in tasks:
         task_name = task.get("sprint_backlog", "")
-        best_match = None
-        best_ratio = 0.0
 
-        for item in backlog:
-            # Use ratio for similar-length strings, partial_ratio for longer task names.
-            # But guard against short backlog items matching long tasks spuriously:
-            # require the backlog item to be at least 40% of the task name length.
-            task_lower = task_name.lower()
-            item_lower = item.lower()
-            if len(item_lower) < len(task_lower) * 0.4:
-                continue  # backlog item too short relative to task name
-            ratio = fuzz.ratio(task_lower, item_lower) / 100.0
-            partial = fuzz.partial_ratio(task_lower, item_lower) / 100.0
-            score = max(ratio, partial * 0.9)  # slight penalty for partial matches
-            if score > best_ratio:
-                best_ratio = score
-                best_match = item
+        # Semantic match
+        matched, score = await find_best_match(task_name, backlog, threshold=0.80)
 
-        if best_match and best_ratio >= DEDUP_THRESHOLD:
-            # Don't write to backlog column — the backlog item already exists in its own row
+        # Fuzzy fallback
+        if matched is None:
+            best_ratio = 0.0
+            for item in backlog:
+                task_lower = task_name.lower()
+                item_lower = item.lower()
+                if len(item_lower) < len(task_lower) * 0.4:
+                    continue
+                ratio = fuzz.ratio(task_lower, item_lower) / 100.0
+                partial = fuzz.partial_ratio(task_lower, item_lower) / 100.0
+                s = max(ratio, partial * 0.9)
+                if s > best_ratio:
+                    best_ratio = s
+                    matched = item if s >= DEDUP_THRESHOLD else None
+
+        if matched:
             comments = task.get("comments", "")
             if "From backlog" not in comments:
                 task["comments"] = f"From backlog; {comments}" if comments else "From backlog"
+            logger.info("Backlog match: '%s' → '%s'", task_name, matched)
 
     return tasks
 
@@ -356,7 +347,7 @@ def task_to_row(task: dict) -> list:
 # ──────────────────────────────────────────────
 
 
-def validate_all(
+async def validate_all(
     tasks: list[dict],
     existing_rows: list[dict],
     backlog: list[str],
@@ -364,37 +355,29 @@ def validate_all(
 ) -> tuple[list[dict], list[dict]]:
     """
     Run all validation rules in order:
-      1. Backlog matching
+      1. Backlog matching (semantic)
       2. Adhoc verification
       3. Dependency normalization
-      4. Deduplication
+      4. Deduplication (semantic)
       5. Defaults
       6. Schema enforcement
 
     Returns:
         (new_tasks, update_tasks)
-        - new_tasks: list of validated task dicts to append
-        - update_tasks: list of validated task dicts with _row_index to update
     """
-    # Steps 1–3: enrich tasks
-    tasks = match_backlog(tasks, backlog)
+    tasks = await match_backlog(tasks, backlog)
     tasks = verify_adhoc(tasks)
     tasks = normalize_dependencies(tasks)
 
-    # Step 4: skip task-level dedup — every EOD entry is a new task.
-    # Duplicate notifications are already handled at the Graph notification level
-    # (_processed_messages cache in main.py).
-    new_tasks = tasks
-    update_tasks = []
+    new_tasks, update_tasks = await deduplicate(tasks, existing_rows)
 
-    # Step 5: apply defaults
     new_tasks = apply_defaults(new_tasks, sprint_end)
+    update_tasks = apply_defaults(update_tasks, sprint_end)
 
-    # Step 6: schema enforcement
     new_tasks = enforce_schema(new_tasks)
+    update_tasks = enforce_schema(update_tasks)
 
     logger.info(
-        "Validation complete: %d new tasks",
-        len(new_tasks),
+        "Validation complete: %d new, %d updates", len(new_tasks), len(update_tasks)
     )
     return new_tasks, update_tasks

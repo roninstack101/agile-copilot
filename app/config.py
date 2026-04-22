@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # --- Teams Chat (Graph API subscription) ---
     CHAT_ID: str = Field(default="", description="MS Teams group chat ID for EOD messages")
+    AGILE_CHAT_ID: str = Field(default="", description="MS Teams group chat ID for agile summaries (morning, WIP, progress). Falls back to CHAT_ID if not set.")
     WEBHOOK_NOTIFICATION_URL: str = Field(
         default="",
         description="Public URL for Graph API subscription notifications (e.g. https://your-server.com/api/graph-webhook)",

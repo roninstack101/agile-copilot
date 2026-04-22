@@ -80,7 +80,6 @@ def _build_existing_tasks_summary(existing_rows: list[dict]) -> str:
     if not existing_rows:
         return "  (no existing tasks)"
 
-    # Group by (brand, activity_type) for pattern clarity
     groups: dict[tuple[str, str], list[str]] = {}
     for row in existing_rows:
         name = row.get("sprint_backlog", "")
@@ -93,18 +92,37 @@ def _build_existing_tasks_summary(existing_rows: list[dict]) -> str:
 
     lines = []
     for (brand, activity), tasks in sorted(groups.items()):
-        # Show at most 8 tasks per group
         display = tasks[:8]
         task_list = ", ".join(display)
         if len(tasks) > 8:
             task_list += f", ... (+{len(tasks) - 8} more)"
         lines.append(f"  {brand} ({activity}): {task_list}")
 
-    # Cap total lines
-    if len(lines) > 25:
-        lines = lines[:25] + [f"  ... (+{len(lines) - 25} more groups)"]
-
     return "\n".join(lines) if lines else "  (no existing tasks)"
+
+
+async def _get_relevant_existing_tasks(eod_text: str, existing_rows: list[dict], k: int = 12) -> list[dict]:
+    """
+    Return the top-k existing sheet rows most semantically relevant to this EOD.
+    Falls back to returning all rows if embedding is unavailable.
+    """
+    from app.embeddings import find_top_k
+
+    if not existing_rows:
+        return []
+
+    row_names = [r.get("sprint_backlog", "") for r in existing_rows if r.get("sprint_backlog")]
+    if not row_names:
+        return existing_rows
+
+    try:
+        top = await find_top_k(eod_text, row_names, k=k)
+        top_names = {name for name, _ in top}
+        filtered = [r for r in existing_rows if r.get("sprint_backlog") in top_names]
+        return filtered if filtered else existing_rows
+    except Exception as e:
+        logger.warning("Semantic context filtering failed: %s — using all rows", e)
+        return existing_rows
 
 
 def _build_prompt(eod_text: str, context: dict) -> str:
@@ -218,108 +236,50 @@ async def parse_with_groq(eod_text: str, context: dict) -> list[dict]:
     return _postprocess(tasks)
 
 
-def _enrich_with_ai(local_tasks: list[dict], ai_tasks: list[dict]) -> list[dict]:
-    """
-    Hybrid approach: keep the local parser's structure (headers, grouping)
-    but enrich individual tasks with AI's field inference (brand, stage,
-    priority, story points, comments).
-
-    The local parser is the source of truth for structure; AI is the source
-    of truth for field values on matching tasks.
-    """
-    from fuzzywuzzy import fuzz
-
-    enriched = []
-    for task in local_tasks:
-        task_name = task.get("sprint_backlog", "").lower()
-
-        # Find best matching AI task
-        best_match = None
-        best_ratio = 0.0
-        for ai_task in ai_tasks:
-            ai_name = ai_task.get("sprint_backlog", "").lower()
-            ratio = fuzz.ratio(task_name, ai_name) / 100.0
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_match = ai_task
-
-        if best_match and best_ratio >= 0.6:
-            # Merge: AI fields override local, but keep local's sprint_backlog
-            ENRICH_FIELDS = ["brand", "activity_type", "stage", "dependency"]
-            for field in ENRICH_FIELDS:
-                ai_val = best_match.get(field)
-                if ai_val and str(ai_val).strip() and str(ai_val) not in ("0", "Unknown", "unknown", "N/A", "n/a", "None", "none"):
-                    # For stage: if local parser detected "Sent for Approval"
-                    # (explicit review/approval keywords), don't let AI
-                    # override to "Closed" — the approval signal is more specific
-                    if field == "stage":
-                        local_stage = task.get("stage", "WIP")
-                        if local_stage == "Sent for Approval" and ai_val == "Closed":
-                            continue
-                    task[field] = ai_val
-            logger.info(
-                "Enriched '%s' with AI (brand='%s', activity='%s', stage='%s')",
-                task["sprint_backlog"],
-                task.get("brand", ""),
-                task.get("activity_type", ""),
-                task.get("stage", ""),
-            )
-
-        enriched.append(task)
-
-    return enriched
-
-
 async def parse_eod(eod_text: str, context: dict) -> list[dict]:
     """
-    Hybrid parsing: local parser for structure + AI for enrichment.
+    AI-first parsing: Gemini → Groq → local regex fallback.
 
-    1. Local parser extracts structure (headers, bullets, grouping) — always reliable
-    2. AI (Gemini → Groq) enriches fields (brand, stage, priority, story points)
-    3. If AI fails entirely, local parser output is used as-is
+    AI drives both task identification and field values.
+    Existing rows are semantically filtered to the most relevant before
+    being passed to the prompt, so AI gets focused context not noise.
 
     Returns a list of task dictionaries.
     """
     from app.local_parser import parse_eod_local
 
-    # Step 1: Local parser — always runs, provides reliable structure
-    local_tasks = parse_eod_local(eod_text, context)
-    if not local_tasks:
-        return []
+    # Narrow existing rows to the most semantically relevant for this EOD
+    existing_rows = context.get("existing_rows", [])
+    if existing_rows:
+        relevant_rows = await _get_relevant_existing_tasks(eod_text, existing_rows)
+        context = {**context, "existing_rows": relevant_rows}
+        logger.info(
+            "Semantic context: %d/%d existing rows selected for prompt",
+            len(relevant_rows), len(existing_rows),
+        )
 
-    logger.info("Local parser extracted %d tasks (structure source)", len(local_tasks))
-
-    # Step 2: Try AI for enrichment (Gemini → Groq)
-    ai_tasks = None
-
+    # Step 1: Gemini
     if settings.GEMINI_API_KEY:
         try:
-            ai_tasks = await parse_with_gemini(eod_text, context)
-            if ai_tasks:
-                logger.info("Gemini returned %d tasks for enrichment", len(ai_tasks))
-            else:
-                logger.warning("Gemini returned empty, trying Groq")
-                ai_tasks = None
+            tasks = await parse_with_gemini(eod_text, context)
+            if tasks:
+                logger.info("Gemini parsed %d tasks", len(tasks))
+                return tasks
+            logger.warning("Gemini returned empty, trying Groq")
         except Exception as e:
-            logger.warning("Gemini failed: %s, trying Groq", e)
+            logger.warning("Gemini failed: %s — trying Groq", e)
 
-    if not ai_tasks and settings.GROQ_API_KEY:
+    # Step 2: Groq
+    if settings.GROQ_API_KEY:
         try:
-            ai_tasks = await parse_with_groq(eod_text, context)
-            if ai_tasks:
-                logger.info("Groq returned %d tasks for enrichment", len(ai_tasks))
-            else:
-                logger.warning("Groq returned empty")
-                ai_tasks = None
+            tasks = await parse_with_groq(eod_text, context)
+            if tasks:
+                logger.info("Groq parsed %d tasks", len(tasks))
+                return tasks
+            logger.warning("Groq returned empty")
         except Exception as e:
-            logger.warning("Groq failed: %s", e)
+            logger.warning("Groq failed: %s — falling back to local parser", e)
 
-    # Step 3: Merge — local structure + AI enrichment
-    if ai_tasks:
-        result = _enrich_with_ai(local_tasks, _postprocess(ai_tasks))
-        logger.info("Hybrid parse: %d tasks (local structure + AI enrichment)", len(result))
-        return result
-
-    # AI unavailable — local parser output is still solid
-    logger.info("Using local parser only (AI unavailable): %d tasks", len(local_tasks))
-    return local_tasks
+    # Step 3: Local regex fallback
+    logger.info("AI unavailable — falling back to local parser")
+    return await parse_eod_local(eod_text, context)
