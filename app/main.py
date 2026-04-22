@@ -14,6 +14,7 @@ Endpoints:
   GET  /health                  — health check
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import date
@@ -56,12 +57,16 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown logic."""
     logger.info("Agile Copilot starting up")
 
-    # Auto-create subscription on startup and keep it alive
-    try:
-        await subscription_manager.ensure_active()
-        logger.info("Subscription active on startup")
-    except Exception as e:
-        logger.warning("Could not create subscription on startup: %s", e)
+    # Schedule subscription creation after server is fully ready
+    async def _delayed_subscribe():
+        await asyncio.sleep(5)  # wait for uvicorn to finish booting
+        try:
+            await subscription_manager.ensure_active()
+            logger.info("Subscription active on startup")
+        except Exception as e:
+            logger.warning("Could not create subscription on startup: %s", e)
+
+    asyncio.create_task(_delayed_subscribe())
     subscription_manager.start_auto_renewal()
 
     # Start daily scheduler (9:30 todo, 10:15 agile reminder, 11:30 progress, 6PM EOD)
