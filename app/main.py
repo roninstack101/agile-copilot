@@ -545,9 +545,9 @@ async def _send_teams_message(content: str, chat_id: str | None = None) -> None:
     from app.graph_auth import graph_auth
     from app.config import GRAPH_BASE_URL
 
-    target = chat_id or settings.CHAT_ID
+    target = chat_id or settings.AGILE_CHAT_ID
     if not target:
-        raise ValueError("CHAT_ID not configured")
+        raise ValueError("AGILE_CHAT_ID not configured")
 
     url = f"{GRAPH_BASE_URL}/chats/{target}/messages"
     payload = {"body": {"contentType": "html", "content": content}}
@@ -568,9 +568,8 @@ async def _send_teams_message(content: str, chat_id: str | None = None) -> None:
 
 
 async def _send_agile_message(content: str) -> None:
-    """Send to the agile group chat (AGILE_CHAT_ID), falling back to the main chat."""
-    chat_id = settings.AGILE_CHAT_ID or settings.CHAT_ID
-    await _send_teams_message(content, chat_id=chat_id)
+    """Send to the agile group chat (AGILE_CHAT_ID)."""
+    await _send_teams_message(content, chat_id=settings.AGILE_CHAT_ID)
 
 
 @app.post("/api/test-message")
