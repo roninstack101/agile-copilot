@@ -692,10 +692,25 @@ async def _insert_and_write_row(
     headers = await graph_auth.get_headers()
 
     # Step 1: Insert a blank row using the full sheet width (must complete before writing values)
+    # If insert fails (e.g. sheet has a structural block), fall back to appending at end of sheet.
     insert_base = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{insert_address}')"
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{insert_base}/insert", headers=headers, json={"shift": "Down"})
-        resp.raise_for_status()
+        if resp.status_code == 500:
+            logger.warning("Insert failed for sheet '%s' row %d — falling back to append at end", sheet_name, excel_row)
+            # Find last used row and append directly after it
+            r_used = await client.get(
+                f"{_workbook_url()}/worksheets/{sheet_name}/usedRange(valuesOnly=true)",
+                headers=headers,
+            )
+            used_values = r_used.json().get("values", []) if r_used.status_code == 200 else []
+            fallback_row = _last_data_row(used_values, 0) + 2  # 1-indexed, after last data
+            end_col = chr(ord("A") + num_cols - 1)
+            address = f"A{fallback_row}:{end_col}{fallback_row}"
+            base = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')"
+            logger.info("Appending '%s' at fallback row %d", task.get("sprint_backlog", "") if task else "", fallback_row)
+        else:
+            resp.raise_for_status()
 
     # Step 2: Write values + all formatting in parallel (independent of each other)
     async def _patch(url: str, body: dict) -> None:
