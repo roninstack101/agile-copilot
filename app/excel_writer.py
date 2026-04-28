@@ -567,6 +567,8 @@ async def write_tasks(
     header_idx, header = _detect_header_row(values)
     col_map = _build_column_map(header)
     num_cols = len(header)
+    # Full row width from sheet (may exceed header count due to extra formatted cols)
+    sheet_width = max(len(row) for row in values) if values else num_cols
 
     if not col_map.get("sprint_backlog"):
         results["errors"].append("Cannot find 'Sprint Backlog' column in sheet")
@@ -626,7 +628,7 @@ async def write_tasks(
                 # No existing brand section → append at end of sheet
                 insert_pos = end_of_sheet
 
-            await _insert_and_write_row(sheet, insert_pos, row_values, num_cols, task=task)
+            await _insert_and_write_row(sheet, insert_pos, row_values, num_cols, task=task, insert_width=sheet_width)
 
             # Every insert shifts all rows at or after insert_pos down by 1
             for b in list(brand_last_row.keys()):
@@ -671,10 +673,16 @@ def _row_fill_color(task: dict | None) -> str:
 
 
 async def _insert_and_write_row(
-    sheet_name: str, excel_row: int, values: list, num_cols: int, task: dict | None = None
+    sheet_name: str, excel_row: int, values: list, num_cols: int, task: dict | None = None,
+    insert_width: int | None = None,
 ) -> dict:
     """Insert a new row at the given position and write values to it."""
     import asyncio
+
+    # Use full sheet width for insert so the Graph API doesn't reject a partial-row shift
+    _insert_cols = insert_width if insert_width and insert_width > num_cols else num_cols
+    insert_end_col = chr(ord("A") + _insert_cols - 1)
+    insert_address = f"A{excel_row}:{insert_end_col}{excel_row}"
 
     end_col = chr(ord("A") + num_cols - 1)
     address = f"A{excel_row}:{end_col}{excel_row}"
@@ -683,9 +691,10 @@ async def _insert_and_write_row(
 
     headers = await graph_auth.get_headers()
 
-    # Step 1: Insert a blank row (must complete before writing values)
+    # Step 1: Insert a blank row using the full sheet width (must complete before writing values)
+    insert_base = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{insert_address}')"
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(f"{base}/insert", headers=headers, json={"shift": "Down"})
+        resp = await client.post(f"{insert_base}/insert", headers=headers, json={"shift": "Down"})
         resp.raise_for_status()
 
     # Step 2: Write values + all formatting in parallel (independent of each other)
