@@ -582,7 +582,7 @@ async def write_tasks(
                 try:
                     row_values = _task_to_row(task, col_map, num_cols)
                     actual_row = sheet_row + 1  # 0-indexed → 1-indexed
-                    await _write_row(sheet, actual_row, row_values, num_cols)
+                    await _write_row(sheet, actual_row, row_values, num_cols, task=task)
                     results["updated"] += 1
                 except Exception as e:
                     logger.error("Failed to update row %d in '%s': %s", sheet_row, sheet, e)
@@ -593,7 +593,7 @@ async def write_tasks(
                     try:
                         row_values = _task_to_row(task, col_map, num_cols)
                         actual_row = header_idx + 1 + row_idx + 1
-                        await _write_row(sheet, actual_row, row_values, num_cols)
+                        await _write_row(sheet, actual_row, row_values, num_cols, task=task)
                         results["updated"] += 1
                     except Exception as e:
                         logger.error("Failed to update row %d in '%s': %s", row_idx, sheet, e)
@@ -736,20 +736,30 @@ async def _insert_and_write_row(
     return {}
 
 
-async def _write_row(sheet_name: str, excel_row: int, values: list, num_cols: int) -> dict:
-    """Overwrite an existing row (for updates only)."""
+async def _write_row(sheet_name: str, excel_row: int, values: list, num_cols: int, task: dict | None = None) -> dict:
+    """Overwrite an existing row (for updates only), applying fill/font/alignment."""
+    import asyncio
+
     end_col = chr(ord("A") + num_cols - 1)
     address = f"A{excel_row}:{end_col}{excel_row}"
+    base = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')"
+    fill_color = _row_fill_color(task)
 
     headers = await graph_auth.get_headers()
-    url = f"{_workbook_url()}/worksheets/{sheet_name}/range(address='{address}')"
 
-    payload = {"values": [values]}
+    async def _patch(url: str, body: dict) -> None:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.patch(url, headers=headers, json=body)
+            if r.status_code >= 400:
+                logger.debug("PATCH %s returned %d", url.split("/range")[1], r.status_code)
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.patch(url, headers=headers, json=payload)
-        response.raise_for_status()
-        result = response.json()
+    await asyncio.gather(
+        _patch(base, {"values": [values]}),
+        _patch(f"{base}/format/fill", {"color": fill_color}),
+        _patch(f"{base}/format/font", {"bold": False, "color": "#000000", "italic": False, "size": 11, "name": "Calibri"}),
+        _patch(f"{base}/format", {"wrapText": True, "horizontalAlignment": "Center", "verticalAlignment": "Center"}),
+        return_exceptions=True,
+    )
 
-    logger.info("Wrote row %d in sheet '%s'", excel_row, sheet_name)
-    return result
+    logger.info("Wrote row %d in sheet '%s' (fill=%s)", excel_row, sheet_name, fill_color)
+    return {}
