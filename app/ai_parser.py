@@ -33,6 +33,7 @@ TASK_SCHEMA = {
             "comments": {"type": "string"},
             "expected_story_points": {"type": "integer"},
             "actual_story_points": {"type": "integer"},
+            "update_row_idx": {"type": "integer"},
         },
         "required": [
             "brand",
@@ -46,6 +47,7 @@ TASK_SCHEMA = {
             "comments",
             "expected_story_points",
             "actual_story_points",
+            "update_row_idx",
         ],
     },
 }
@@ -92,11 +94,14 @@ def _build_existing_tasks_summary(existing_rows: list[dict]) -> str:
 
     lines = []
     for (brand, activity), tasks in sorted(groups.items()):
-        display = tasks[:8]
-        task_list = ", ".join(display)
-        if len(tasks) > 8:
-            task_list += f", ... (+{len(tasks) - 8} more)"
-        lines.append(f"  {brand} ({activity}): {task_list}")
+        display = tasks # Show all tasks for full context
+        task_list = []
+        for t in display:
+            # Include the row index so AI can refer to it
+            row_idx = next(r.get("_sheet_row") for r in existing_rows if f"{r.get('sprint_backlog')} [{r.get('stage')}]" == t)
+            task_list.append(f"#{row_idx}: {t}")
+        
+        lines.append(f"  {brand} ({activity}): {', '.join(task_list)}")
 
     return "\n".join(lines) if lines else "  (no existing tasks)"
 
@@ -139,6 +144,7 @@ def _build_prompt(eod_text: str, context: dict) -> str:
     brand_str = "\n".join(f"  - {brand}" for brand in brand_list) if brand_list else "  (no brands)"
     activity_str = "\n".join(f"  - {at}" for at in activity_types) if activity_types else "  (no activity types)"
     tasks_str = _build_existing_tasks_summary(existing_rows)
+    history_str = context.get("history_context", "(no previous history)")
 
     prompt = SYSTEM_PROMPT_TEMPLATE
     prompt = prompt.replace("{{MEMBER_NAME}}", member_name)
@@ -148,6 +154,7 @@ def _build_prompt(eod_text: str, context: dict) -> str:
     prompt = prompt.replace("{{BRAND_LIST}}", brand_str)
     prompt = prompt.replace("{{ACTIVITY_TYPE_LIST}}", activity_str)
     prompt = prompt.replace("{{EXISTING_TASKS}}", tasks_str)
+    prompt = prompt.replace("{{HISTORY_CONTEXT}}", history_str)
 
     return prompt + f"\n\n---\nEOD MESSAGE:\n{eod_text}"
 
@@ -246,18 +253,6 @@ async def parse_eod(eod_text: str, context: dict) -> list[dict]:
 
     Returns a list of task dictionaries.
     """
-    from app.local_parser import parse_eod_local
-
-    # Narrow existing rows to the most semantically relevant for this EOD
-    existing_rows = context.get("existing_rows", [])
-    if existing_rows:
-        relevant_rows = await _get_relevant_existing_tasks(eod_text, existing_rows)
-        context = {**context, "existing_rows": relevant_rows}
-        logger.info(
-            "Semantic context: %d/%d existing rows selected for prompt",
-            len(relevant_rows), len(existing_rows),
-        )
-
     # Step 1: Gemini
     if settings.GEMINI_API_KEY:
         try:

@@ -99,7 +99,7 @@ BRAND_PARENT = {
 }
 
 # Fuzzy-match threshold for deduplication
-DEDUP_THRESHOLD = 0.85
+DEDUP_THRESHOLD = 0.75
 
 # Backlog promotion: threshold for matching parsed tasks to backlog items
 BACKLOG_PROMOTION_THRESHOLD = 0.65

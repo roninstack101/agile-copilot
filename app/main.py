@@ -251,6 +251,13 @@ async def _process_eod(sender: str, clean_message: str, timestamp: str) -> Pipel
     sprint_end = get_sprint_end_date()
     today = date.today().isoformat()
 
+    # Fetch previous 3 days EOD history for context
+    history_str = ""
+    try:
+        history_str = await _get_member_history(sender)
+    except Exception as e:
+        logger.warning("Failed to fetch member history: %s", e)
+
     try:
         sheet_ctx = await read_sheet_context(sheet_name=sheet_name)
     except Exception as e:
@@ -269,6 +276,7 @@ async def _process_eod(sender: str, clean_message: str, timestamp: str) -> Pipel
         "sprint_end_date": sprint_end,
         "backlog_list": backlog,
         "existing_rows": existing_rows,
+        "history_context": history_str,
     }
 
     logger.info(
@@ -515,6 +523,56 @@ async def _fetch_message(resource: str) -> dict:
         response = await client.get(url, headers=headers)
         response.raise_for_status()
         return response.json()
+
+
+async def _fetch_chat_history(chat_id: str, limit: int = 50) -> list[dict]:
+    """Fetch recent messages from a Teams chat."""
+    import httpx
+    from app.graph_auth import graph_auth
+    from app.config import GRAPH_BASE_URL
+
+    headers = await graph_auth.get_headers()
+    url = f"{GRAPH_BASE_URL}/chats/{chat_id}/messages?$top={limit}"
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json().get("value", [])
+
+
+async def _get_member_history(sender: str, days: int = 3) -> str:
+    """Fetch and format the last 3 days of EODs for a specific sender."""
+    chat_id = settings.CHAT_ID or settings.AGILE_CHAT_ID
+    if not chat_id:
+        return ""
+
+    try:
+        messages = await _fetch_chat_history(chat_id, limit=100)
+    except Exception as e:
+        logger.warning("History fetch failed: %s", e)
+        return ""
+
+    from app.teams_capture import extract_metadata, is_eod_message
+
+    eods = []
+    seen_dates = set()
+
+    for msg in messages:
+        meta = extract_metadata(msg)
+        if meta["sender"] == sender and is_eod_message(meta["clean_message"]):
+            # Extract date part of timestamp
+            ts = meta["timestamp"]
+            date_part = ts.split("T")[0] if "T" in ts else ts
+            if date_part not in seen_dates:
+                seen_dates.add(date_part)
+                eods.append(f"Date: {date_part}\n{meta['clean_message']}")
+        if len(seen_dates) >= days:
+            break
+
+    if not eods:
+        return "(no previous EODs found in recent chat history)"
+
+    return "\n\n---\n".join(reversed(eods))
 
 
 @app.post("/api/subscribe")

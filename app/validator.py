@@ -59,52 +59,52 @@ async def deduplicate(
 
     for task in tasks:
         task_name = task.get("sprint_backlog", "")
-        target_section = _task_target_section(task)
+        update_idx = task.get("update_row_idx", -1)
 
-        # Quantity-marked tasks are always new instances — skip dedup
-        if "Quantity:" in task.get("comments", ""):
+        # Priority 1: AI-driven match (LLM chose an existing row)
+        existing = None
+        if update_idx != -1:
+            existing = next((r for r in existing_rows if r.get("_sheet_row") == update_idx), None)
+            if existing:
+                logger.info("AI matched task '%s' to row %d", task_name, update_idx)
+                # Found a match via AI index
+                row_idx = next((i for i, r in enumerate(existing_rows) if r.get("_sheet_row") == update_idx), -1)
+            else:
+                logger.warning("AI suggested row index %d but it wasn't found in existing_rows", update_idx)
+
+        # Priority 2: Fallback to Semantic/Fuzzy match (if AI suggested -1 or was wrong)
+        if not existing:
+            # --- Semantic match ---
+            matched_name, score = await find_best_match(task_name, existing_names, threshold=0.85)
+
+            # --- Fuzzy fallback ---
+            if matched_name is None:
+                best_ratio = 0.0
+                for name in existing_names:
+                    ratio = fuzz.ratio(task_name.lower(), name.lower()) / 100.0
+                    token_ratio = fuzz.token_set_ratio(task_name.lower(), name.lower()) / 100.0
+                    s = max(ratio, token_ratio * 0.95)
+                    if s > best_ratio:
+                        best_ratio = s
+                        matched_name = name if s >= DEDUP_THRESHOLD else None
+                score = best_ratio
+
+            if matched_name:
+                candidates = [(i, r) for i, r in enumerate(existing_rows) if r.get("sprint_backlog") == matched_name]
+                if candidates:
+                    target_section = _task_target_section(task)
+                    row_idx, existing = candidates[0]
+                    # Section-aware refinement
+                    for i, r in candidates:
+                        row_section = r.get("brand", "").strip().lower()
+                        if target_section and row_section == target_section:
+                            row_idx, existing = i, r
+                            break
+                    logger.info("Fallback match: '%s' → '%s' (score=%.2f)", task_name, existing.get("sprint_backlog"), score)
+
+        if not existing:
             new_tasks.append(task)
-            logger.info("Skipping dedup for '%s' (quantity marker)", task_name)
             continue
-
-        # --- Semantic match ---
-        matched_name, score = await find_best_match(
-            task_name, existing_names, threshold=0.82
-        )
-
-        # --- Fuzzy fallback if embeddings unavailable ---
-        if matched_name is None:
-            best_ratio = 0.0
-            for name in existing_names:
-                ratio = fuzz.ratio(task_name.lower(), name.lower()) / 100.0
-                if ratio > best_ratio:
-                    best_ratio = ratio
-                    matched_name = name if ratio >= DEDUP_THRESHOLD else None
-            score = best_ratio
-
-        if matched_name is None:
-            new_tasks.append(task)
-            continue
-
-        # Find the matching row (prefer section-compatible if multiple close scores)
-        candidates = [
-            (idx, r) for idx, r in enumerate(existing_rows)
-            if r.get("sprint_backlog") == matched_name
-        ]
-        if not candidates:
-            new_tasks.append(task)
-            continue
-
-        # Section-aware pick
-        row_idx, existing = candidates[0]
-        for idx, r in candidates:
-            row_section = r.get("_section", "")
-            if target_section and row_section == target_section:
-                row_idx, existing = idx, r
-                break
-            if not target_section and row_section not in brand_sections:
-                row_idx, existing = idx, r
-                break
 
         # Merge — never regress stage
         STAGE_RANK = {"WIP": 0, "Sent for Approval": 1, "Closed": 2}
@@ -117,20 +117,24 @@ async def deduplicate(
             else existing_stage
         )
         merged["priority"] = task.get("priority", existing.get("priority", DEFAULT_PRIORITY))
-        if task.get("comments"):
-            old = existing.get("comments", "")
-            merged["comments"] = f"{old}; Updated: {task['comments']}" if old else task["comments"]
+        
+        # Clean up existing comments if it was just "From backlog" and we have new info
+        old_comments = existing.get("comments", "")
+        new_comments = task.get("comments", "")
+        if new_comments:
+            if not old_comments or old_comments == "From backlog":
+                merged["comments"] = new_comments
+            elif new_comments not in old_comments:
+                merged["comments"] = f"{old_comments}; {new_comments}"
+        
         if task.get("dependency"):
             merged["dependency"] = task["dependency"]
+        
         merged["_row_index"] = row_idx
         if "_sheet_row" in existing:
             merged["_sheet_row"] = existing["_sheet_row"]
 
         update_tasks.append(merged)
-        logger.info(
-            "Dedup match: '%s' → '%s' (score=%.2f)",
-            task_name, existing.get("sprint_backlog"), score,
-        )
 
     logger.info("Dedup result: %d new, %d updates", len(new_tasks), len(update_tasks))
     return new_tasks, update_tasks

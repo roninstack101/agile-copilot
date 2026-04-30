@@ -32,7 +32,8 @@ Each task object must have these exact fields:
   "stage": "WIP",
   "comments": "",
   "expected_story_points": 2,
-  "actual_story_points": 0
+  "actual_story_points": 0,
+  "update_row_idx": -1
 }
 
 SHEET-AWARE INTELLIGENCE:
@@ -46,6 +47,28 @@ STUDY these patterns carefully before parsing:
   The task text is secondary — patterns from the sheet take priority.
 - If a task is similar to an existing one (e.g. "microfiction draft" ≈ "Micro Fiction"),
   use the SAME brand and activity_type as the existing task.
+- IMPORTANT: If you match a task to an existing one, you MUST use the EXACT SAME sprint_backlog
+  name as shown in the EXISTING TASKS list.
+- update_row_idx:
+  - If you identify that an EOD task is a continuation or update of an existing task in the sheet,
+    set update_row_idx to the #ID provided in the EXISTING TASKS list (e.g. #42 -> 42).
+  - INTENT MATCHING: Match specific actions to high-level titles. If the Excel sheet has 
+    "Linked In UI Changes" and the EOD says "fixed ui design and solve bug", these are the 
+    SAME task. Update the existing row rather than creating a new one.
+  - If it is a completely new task, set update_row_idx to -1.
+  - If you are unsure, default to -1.
+
+HISTORY & PROGRESSION ANALYSIS:
+You are provided with the PREVIOUS 3 DAYS OF EODs from this member.
+- Study the 3-day history to understand the PROJECT STATUS and DEPENDENCIES.
+- RECOGNIZING UPDATES: If a task was "Blocked" or "In Progress" in the past 3 days and is 
+  mentioned today, it is almost certainly an UPDATE to that same row.
+- INTENT OVER TIME: If the user manually added a high-level task 2 days ago, and today's 
+  EOD describes a specific piece of that task, link them using update_row_idx.
+- DEPENDENCY TRACKING: Look for tasks that were "Waiting for [Person]" in the history. If 
+  today's EOD says that dependency is resolved, update the existing row's status and 
+  dependency column.
+- If they "finished X" yesterday and are doing "Y" today, it is a NEW task.
 
 BACKLOG MATCHING:
 You are given the BACKLOG LIST — items pre-assigned for this sprint but not yet started.
@@ -146,3 +169,6 @@ CONTEXT (injected per request):
 {{ACTIVITY_TYPE_LIST}}
 - Existing tasks in this member's sheet (study these patterns!):
 {{EXISTING_TASKS}}
+
+- Previous 3 days of EODs (for progression context):
+{{HISTORY_CONTEXT}}
