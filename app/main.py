@@ -7,7 +7,8 @@ Endpoints:
   GET  /api/graph-webhook       — handle Graph API validation handshake
   POST /api/subscribe           — create/renew Graph API subscription
   POST /api/eod-reminder        — send EOD reminder to Teams group chat
-  POST /api/missing-eod         — send list of members who haven't submitted EOD today
+  POST /api/missing-eod         — send list of members who didn't submit yesterday's EOD
+  POST /api/eod-calendar        — send monthly EOD attendance summary to Teams
   POST /api/morning-summary     — send AI-prioritized morning summary to Teams
   GET  /api/login               — start delegated auth (sign in to send Teams messages)
   GET  /api/auth-callback       — OAuth callback to capture auth code
@@ -35,6 +36,7 @@ from app.excel_writer import (
 from app.task_router import route_tasks
 from app.subscription_manager import subscription_manager
 from app.scheduler import scheduler
+from app import eod_tracker
 
 # ──────────────────────────────────────────────
 # Logging
@@ -46,9 +48,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Tracks which sheet names have submitted an EOD today: { "2025-01-15": {"Yash", "Aarav"} }
-eod_submitted_today: dict[str, set[str]] = {}
-
 
 # ──────────────────────────────────────────────
 # App lifecycle
@@ -59,6 +58,8 @@ eod_submitted_today: dict[str, set[str]] = {}
 async def lifespan(app: FastAPI):
     """Startup / shutdown logic."""
     logger.info("Agile Copilot starting up")
+
+    eod_tracker.load()
 
     # Schedule subscription creation after server is fully ready
     async def _delayed_subscribe():
@@ -72,13 +73,14 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_delayed_subscribe())
     subscription_manager.start_auto_renewal()
 
-    # Start daily scheduler (9:30 todo, 10:15 agile reminder, 11:30 progress, 6PM EOD, 7:30PM missing EOD)
+    # Start daily scheduler
     scheduler.start(
         eod_callback=_send_eod_reminder,
         morning_callback=_send_agile_reminder,
         progress_callback=_send_progress_report,
         todo_callback=_send_morning_summary,
         missing_eod_callback=_send_missing_eod,
+        monthly_calendar_callback=_send_monthly_calendar,
     )
 
     yield
@@ -351,9 +353,8 @@ async def _process_eod(sender: str, clean_message: str, timestamp: str) -> Pipel
             errors=[f"Excel write failed: {e}"],
         )
 
-    # Mark this member as having submitted today
-    today_key = date.today().isoformat()
-    eod_submitted_today.setdefault(today_key, set()).add(sheet_name)
+    # Mark this member as having submitted today (persisted to disk)
+    eod_tracker.record(date.today().isoformat(), sheet_name)
 
     return PipelineResult(
         status="success",
@@ -646,7 +647,7 @@ async def _send_missing_eod():
         return
 
     yesterday_key = yesterday.isoformat()
-    submitted = eod_submitted_today.get(yesterday_key, set())
+    submitted = eod_tracker.get_submitted(yesterday_key)
 
     missing = [m for m in all_members if m not in submitted]
     done = [m for m in all_members if m in submitted]
@@ -679,13 +680,88 @@ async def missing_eod():
     try:
         await _send_missing_eod()
         yesterday_key = (date.today() - timedelta(days=1)).isoformat()
-        submitted = eod_submitted_today.get(yesterday_key, set())
+        submitted = eod_tracker.get_submitted(yesterday_key)
         all_members = await list_all_sheets()
         missing = [m for m in all_members if m not in submitted]
         return {"status": "ok", "date": yesterday_key, "missing": missing, "submitted": list(submitted)}
     except Exception as e:
         logger.error("Missing EOD check failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Failed to send missing EOD check: {e}")
+
+
+# ──────────────────────────────────────────────
+# Monthly EOD calendar
+# ──────────────────────────────────────────────
+
+
+async def _send_monthly_calendar(year: int | None = None, month: int | None = None):
+    """Send the previous month's EOD attendance summary to Teams."""
+    import calendar
+    from datetime import datetime, timedelta
+    from app.scheduler import _is_off_day
+
+    today = date.today()
+    if year is None or month is None:
+        # Default to previous month
+        first_of_this_month = today.replace(day=1)
+        prev = first_of_this_month - timedelta(days=1)
+        year, month = prev.year, prev.month
+
+    all_members = await list_all_sheets()
+    if not all_members:
+        return
+
+    month_data = eod_tracker.get_month_data(year, month)
+
+    # Collect working days for the month (up to today if current month)
+    _, num_days = calendar.monthrange(year, month)
+    working_days = []
+    for day in range(1, num_days + 1):
+        d = date(year, month, day)
+        if d > today:
+            break
+        if not _is_off_day(datetime(year, month, day)):
+            working_days.append(d)
+
+    if not working_days:
+        return
+
+    month_name = date(year, month, 1).strftime("%B %Y")
+    total_days = len(working_days)
+
+    lines = []
+    for member in all_members:
+        missed = [d for d in working_days if member not in month_data.get(d.isoformat(), set())]
+        submitted_count = total_days - len(missed)
+
+        if not missed:
+            lines.append(f"<b>{member}</b> — {submitted_count}/{total_days} ✓ Perfect attendance!")
+        else:
+            missed_dates = ", ".join(d.strftime("%b %d") for d in missed)
+            lines.append(
+                f"<b>{member}</b> — {submitted_count}/{total_days} &nbsp;|&nbsp; "
+                f"Missed: {missed_dates}"
+            )
+
+    html = (
+        f"<b>EOD Calendar — {month_name}</b><br><br>"
+        + "<br>".join(lines)
+        + f"<br><br><i>{total_days} working days tracked</i>"
+    )
+
+    await _send_agile_message(html)
+    logger.info("Monthly EOD calendar sent for %s", month_name)
+
+
+@app.post("/api/eod-calendar")
+async def eod_calendar(year: int | None = None, month: int | None = None):
+    """Send the monthly EOD calendar. Defaults to previous month."""
+    try:
+        await _send_monthly_calendar(year, month)
+        return {"status": "ok", "year": year, "month": month}
+    except Exception as e:
+        logger.error("Monthly calendar failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to send monthly calendar: {e}")
 
 
 # ──────────────────────────────────────────────

@@ -1,11 +1,12 @@
 """
 Scheduler — runs daily notifications at fixed times (IST).
 
-  9:00 AM IST  → Missing EOD check (who didn't submit yesterday)
-  9:30 AM IST  → Morning todo summary
-  10:15 AM IST → Agile update reminder
-  11:30 AM IST → Progress report
-  6:00 PM IST  → EOD reminder
+  9:00 AM IST        → Missing EOD check (who didn't submit yesterday)
+  9:30 AM IST        → Morning todo summary
+  10:15 AM IST       → Agile update reminder
+  11:30 AM IST       → Progress report
+  6:00 PM IST        → EOD reminder
+  9:00 AM on 1st     → Monthly EOD calendar (previous month)
 """
 
 import asyncio
@@ -35,11 +36,11 @@ logger = logging.getLogger(__name__)
 # IST = UTC+5:30
 IST = timezone(timedelta(hours=5, minutes=30))
 
-MISSING_EOD_TIME = time(9, 0)      # 9:00 AM IST (reports previous day's missing EODs)
-TODO_SUMMARY_TIME = time(9, 30)    # 9:30 AM IST
-MORNING_SUMMARY_TIME = time(10, 15)  # 10:15 AM IST
-PROGRESS_REPORT_TIME = time(11, 30)  # 11:30 AM IST
-EOD_REMINDER_TIME = time(18, 0)    # 6:00 PM IST
+MISSING_EOD_TIME  = time(9, 0)      # 9:00 AM IST
+TODO_SUMMARY_TIME = time(9, 30)     # 9:30 AM IST
+MORNING_SUMMARY_TIME = time(10, 15) # 10:15 AM IST
+PROGRESS_REPORT_TIME = time(11, 30) # 11:30 AM IST
+EOD_REMINDER_TIME = time(18, 0)     # 6:00 PM IST
 
 
 class Scheduler:
@@ -47,7 +48,8 @@ class Scheduler:
         self._task: asyncio.Task | None = None
         self._running = False
 
-    async def _loop(self, eod_callback, morning_callback, progress_callback, todo_callback, missing_eod_callback):
+    async def _loop(self, eod_callback, morning_callback, progress_callback,
+                    todo_callback, missing_eod_callback, monthly_calendar_callback):
         """Main loop — checks time every 30 seconds, fires callbacks at target times."""
         last_date: str = ""
         fired_today: set[str] = set()
@@ -63,7 +65,23 @@ class Scheduler:
                     last_date = today_key
                     logger.info("New day detected: %s — reset fired markers", today_key)
 
-                # Skip notifications on Sundays, 1st and 3rd Saturdays
+                # Monthly EOD calendar — fires on the 1st of each month at 9:00 AM
+                # Checked before the off-day skip so it fires regardless of day of week
+                monthly_key = f"monthly_{today_key}"
+                if (
+                    monthly_key not in fired_today
+                    and now.day == 1
+                    and now.time() >= MISSING_EOD_TIME
+                    and now.time() < time(9, 30)
+                ):
+                    fired_today.add(monthly_key)
+                    logger.info("Triggering monthly EOD calendar")
+                    try:
+                        await monthly_calendar_callback()
+                    except Exception as e:
+                        logger.error("Monthly EOD calendar failed: %s", e)
+
+                # Skip remaining notifications on Sundays, 1st and 3rd Saturdays
                 if _is_off_day(now):
                     await asyncio.sleep(30)
                     continue
@@ -147,13 +165,18 @@ class Scheduler:
                 logger.error("Scheduler error: %s", e)
                 await asyncio.sleep(60)
 
-    def start(self, eod_callback, morning_callback, progress_callback, todo_callback, missing_eod_callback):
+    def start(self, eod_callback, morning_callback, progress_callback,
+              todo_callback, missing_eod_callback, monthly_calendar_callback):
         """Start the scheduler loop with the given async callbacks."""
         self._running = True
         self._task = asyncio.create_task(
-            self._loop(eod_callback, morning_callback, progress_callback, todo_callback, missing_eod_callback)
+            self._loop(eod_callback, morning_callback, progress_callback,
+                       todo_callback, missing_eod_callback, monthly_calendar_callback)
         )
-        logger.info("Scheduler started (todo @ 9:30AM, agile reminder @ 10:15AM, progress @ 11:30AM, EOD @ 6PM, missing EOD @ 7:30PM IST)")
+        logger.info(
+            "Scheduler started (missing EOD @ 9AM, todo @ 9:30AM, agile reminder @ 10:15AM, "
+            "progress @ 11:30AM, EOD @ 6PM IST, monthly calendar on 1st)"
+        )
 
     def stop(self):
         """Stop the scheduler."""
