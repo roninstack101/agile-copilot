@@ -6,8 +6,8 @@ Endpoints:
   POST /api/graph-webhook       — receive Graph API subscription notifications
   GET  /api/graph-webhook       — handle Graph API validation handshake
   POST /api/subscribe           — create/renew Graph API subscription
-  POST /api/notify-wip          — send WIP task summary to Teams group chat
   POST /api/eod-reminder        — send EOD reminder to Teams group chat
+  POST /api/missing-eod         — send list of members who haven't submitted EOD today
   POST /api/morning-summary     — send AI-prioritized morning summary to Teams
   GET  /api/login               — start delegated auth (sign in to send Teams messages)
   GET  /api/auth-callback       — OAuth callback to capture auth code
@@ -46,6 +46,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Tracks which sheet names have submitted an EOD today: { "2025-01-15": {"Yash", "Aarav"} }
+eod_submitted_today: dict[str, set[str]] = {}
+
 
 # ──────────────────────────────────────────────
 # App lifecycle
@@ -69,12 +72,13 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_delayed_subscribe())
     subscription_manager.start_auto_renewal()
 
-    # Start daily scheduler (9:30 todo, 10:15 agile reminder, 11:30 progress, 6PM EOD)
+    # Start daily scheduler (9:30 todo, 10:15 agile reminder, 11:30 progress, 6PM EOD, 7:30PM missing EOD)
     scheduler.start(
         eod_callback=_send_eod_reminder,
         morning_callback=_send_agile_reminder,
         progress_callback=_send_progress_report,
         todo_callback=_send_morning_summary,
+        missing_eod_callback=_send_missing_eod,
     )
 
     yield
@@ -347,6 +351,10 @@ async def _process_eod(sender: str, clean_message: str, timestamp: str) -> Pipel
             errors=[f"Excel write failed: {e}"],
         )
 
+    # Mark this member as having submitted today
+    today_key = date.today().isoformat()
+    eod_submitted_today.setdefault(today_key, set()).add(sheet_name)
+
     return PipelineResult(
         status="success",
         member=sender,
@@ -459,7 +467,7 @@ async def graph_webhook_notification(request: Request):
             continue
         # Skip messages from the delegated user (Yash) that contain bot signatures
         msg_body = message_data.get("body", {}).get("content", "")
-        if any(tag in msg_body for tag in ["Good Morning! Daily Focus", "EOD Reminder", "WIP Task Summary"]):
+        if any(tag in msg_body for tag in ["Good Morning! Daily Focus", "EOD Reminder", "EOD Status"]):
             logger.info("Skipping bot-generated message (signature detected)")
             continue
 
@@ -531,7 +539,7 @@ async def create_subscription():
 
 
 # ──────────────────────────────────────────────
-# WIP notification
+# Teams messaging helpers
 # ──────────────────────────────────────────────
 
 
@@ -579,71 +587,6 @@ async def test_message():
     return {"status": "ok", "message": "Test message sent"}
 
 
-@app.post("/api/notify-wip")
-async def notify_wip(send: bool = True):
-    """
-    Read all member sheets, collect WIP tasks, and send a summary to Teams.
-    Use ?send=false to preview without sending.
-    """
-    members = await list_all_sheets()
-    if not members:
-        raise HTTPException(status_code=500, detail="Could not list worksheets")
-
-    all_summaries = []
-    member_data = []
-
-    for member in members:
-        try:
-            rows = await get_existing_rows(sheet_name=member)
-            wip_tasks = [r for r in rows if r.get("stage") == "WIP" and r.get("sprint_backlog")]
-            if not wip_tasks:
-                continue
-
-            # AI picks the top 5 most important tasks
-            top_tasks = await _ai_prioritize_tasks(member, wip_tasks)
-            remaining = len(wip_tasks) - len(top_tasks)
-
-            lines = []
-            task_list = []
-            for i, t in enumerate(top_tasks, 1):
-                brand = t.get("brand", "")
-                activity = t.get("activity_type", "")
-                priority = t.get("priority", "Medium")
-                name = t.get("sprint_backlog", "")
-                tag = f" ({brand} - {activity})" if brand and activity else f" ({brand or activity})" if brand or activity else ""
-                lines.append(f"{i}. {name}{tag} — {priority}")
-                task_list.append({"name": name, "brand": brand, "activity_type": activity, "priority": priority})
-
-            summary = f"<b>{member}</b> — Top {len(top_tasks)} of {len(wip_tasks)} WIP tasks:<br>" + "<br>".join(lines)
-            if remaining > 0:
-                summary += f"<br><i>+{remaining} more WIP tasks</i>"
-
-            all_summaries.append(summary)
-            member_data.append({"member": member, "wip_count": len(wip_tasks), "top_tasks": task_list})
-        except Exception as e:
-            logger.warning("Failed to read WIP for '%s': %s", member, e)
-
-    if not all_summaries:
-        return {"status": "ok", "message": "No WIP tasks found for any member", "data": []}
-
-    html = (
-        "<b>WIP Task Summary</b><br><br>"
-        + "<br><br>".join(all_summaries)
-        + "<br><br><i>Top 5 prioritized by AI based on priority, effort, and project balance.</i>"
-    )
-
-    if not send:
-        return {"status": "preview", "members": len(member_data), "data": member_data, "html": html}
-
-    try:
-        await _send_agile_message(html)
-        logger.info("WIP notification sent for %d members", len(all_summaries))
-        return {"status": "ok", "members_notified": len(all_summaries), "data": member_data}
-    except Exception as e:
-        logger.error("Failed to send Teams message: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to send Teams message: {e}")
-
-
 # ──────────────────────────────────────────────
 # EOD Reminder (6 PM)
 # ──────────────────────────────────────────────
@@ -677,6 +620,72 @@ async def eod_reminder():
     except Exception as e:
         logger.error("EOD reminder failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Failed to send EOD reminder: {e}")
+
+
+# ──────────────────────────────────────────────
+# Missing EOD check (7:30 PM)
+# ──────────────────────────────────────────────
+
+
+async def _send_missing_eod():
+    """Send a Teams message listing members who didn't submit yesterday's EOD."""
+    from datetime import timedelta
+    from app.scheduler import _is_off_day
+
+    yesterday = date.today() - timedelta(days=1)
+
+    # Don't report if yesterday was an off day (Sunday, 1st/3rd Saturday)
+    from datetime import datetime
+    yesterday_dt = datetime(yesterday.year, yesterday.month, yesterday.day)
+    if _is_off_day(yesterday_dt):
+        logger.info("Skipping missing EOD check — yesterday (%s) was an off day", yesterday)
+        return
+
+    all_members = await list_all_sheets()
+    if not all_members:
+        return
+
+    yesterday_key = yesterday.isoformat()
+    submitted = eod_submitted_today.get(yesterday_key, set())
+
+    missing = [m for m in all_members if m not in submitted]
+    done = [m for m in all_members if m in submitted]
+
+    yesterday_str = yesterday.strftime("%A, %B %d")
+
+    if not missing:
+        html = (
+            f"<b>EOD Status — {yesterday_str}</b><br><br>"
+            "Everyone submitted their EOD yesterday!"
+        )
+    else:
+        missing_list = "<br>".join(f"&bull; {m}" for m in missing)
+        done_str = ", ".join(done) if done else "None"
+        html = (
+            f"<b>EOD Status — {yesterday_str}</b><br><br>"
+            f"<b>Missed EOD ({len(missing)}/{len(all_members)}):</b><br>"
+            + missing_list
+            + f"<br><br><i>Submitted: {done_str}</i>"
+        )
+
+    await _send_agile_message(html)
+    logger.info("EOD status sent for %s: %d missing, %d submitted", yesterday_str, len(missing), len(done))
+
+
+@app.post("/api/missing-eod")
+async def missing_eod():
+    """Manually trigger the missing EOD check (reports who missed yesterday's EOD)."""
+    from datetime import timedelta
+    try:
+        await _send_missing_eod()
+        yesterday_key = (date.today() - timedelta(days=1)).isoformat()
+        submitted = eod_submitted_today.get(yesterday_key, set())
+        all_members = await list_all_sheets()
+        missing = [m for m in all_members if m not in submitted]
+        return {"status": "ok", "date": yesterday_key, "missing": missing, "submitted": list(submitted)}
+    except Exception as e:
+        logger.error("Missing EOD check failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to send missing EOD check: {e}")
 
 
 # ──────────────────────────────────────────────
