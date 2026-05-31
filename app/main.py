@@ -8,7 +8,6 @@ Endpoints:
   POST /api/subscribe           — create/renew Graph API subscription
   POST /api/eod-reminder        — send EOD reminder to Teams group chat
   POST /api/missing-eod         — send list of members who didn't submit yesterday's EOD
-  POST /api/eod-calendar        — send monthly EOD attendance summary to Teams
   POST /api/morning-summary     — send AI-prioritized morning summary to Teams
   GET  /api/login               — start delegated auth (sign in to send Teams messages)
   GET  /api/auth-callback       — OAuth callback to capture auth code
@@ -78,9 +77,7 @@ async def lifespan(app: FastAPI):
         eod_callback=_send_eod_reminder,
         morning_callback=_send_agile_reminder,
         progress_callback=_send_progress_report,
-        todo_callback=_send_morning_summary,
         missing_eod_callback=_send_missing_eod,
-        monthly_calendar_callback=_send_monthly_calendar,
     )
 
     yield
@@ -468,7 +465,10 @@ async def graph_webhook_notification(request: Request):
             continue
         # Skip messages from the delegated user (Yash) that contain bot signatures
         msg_body = message_data.get("body", {}).get("content", "")
-        if any(tag in msg_body for tag in ["Good Morning! Daily Focus", "EOD Reminder", "EOD Status"]):
+        if any(tag in msg_body for tag in [
+            "Good Morning! Daily Focus", "EOD Reminder", "EOD Status",
+            "Agile Update Reminder", "Progress Report",
+        ]):
             logger.info("Skipping bot-generated message (signature detected)")
             continue
 
@@ -629,16 +629,16 @@ async def eod_reminder():
 
 
 async def _send_missing_eod():
-    """Send a Teams message listing members who didn't submit yesterday's EOD."""
-    from datetime import timedelta
+    """Send a Teams message listing members who didn't submit yesterday's EOD,
+    plus a monthly missed count per member."""
+    import calendar as cal_module
+    from datetime import timedelta, datetime
     from app.scheduler import _is_off_day
 
     yesterday = date.today() - timedelta(days=1)
 
     # Don't report if yesterday was an off day (Sunday, 1st/3rd Saturday)
-    from datetime import datetime
-    yesterday_dt = datetime(yesterday.year, yesterday.month, yesterday.day)
-    if _is_off_day(yesterday_dt):
+    if _is_off_day(datetime(yesterday.year, yesterday.month, yesterday.day)):
         logger.info("Skipping missing EOD check — yesterday (%s) was an off day", yesterday)
         return
 
@@ -648,11 +648,23 @@ async def _send_missing_eod():
 
     yesterday_key = yesterday.isoformat()
     submitted = eod_tracker.get_submitted(yesterday_key)
-
     missing = [m for m in all_members if m not in submitted]
     done = [m for m in all_members if m in submitted]
-
     yesterday_str = yesterday.strftime("%A, %B %d")
+
+    # Working days in this month up to and including yesterday
+    month_data = eod_tracker.get_month_data(yesterday.year, yesterday.month)
+    _, num_days = cal_module.monthrange(yesterday.year, yesterday.month)
+    working_days = [
+        date(yesterday.year, yesterday.month, d)
+        for d in range(1, num_days + 1)
+        if date(yesterday.year, yesterday.month, d) <= yesterday
+        and not _is_off_day(datetime(yesterday.year, yesterday.month, d))
+    ]
+    total_working = len(working_days)
+
+    def missed_count(member):
+        return sum(1 for d in working_days if member not in month_data.get(d.isoformat(), set()))
 
     if not missing:
         html = (
@@ -662,11 +674,17 @@ async def _send_missing_eod():
     else:
         missing_list = "<br>".join(f"&bull; {m}" for m in missing)
         done_str = ", ".join(done) if done else "None"
+        monthly_lines = "<br>".join(
+            f"&bull; {m} — {missed_count(m)}/{total_working} missed this month"
+            for m in all_members
+        )
         html = (
             f"<b>EOD Status — {yesterday_str}</b><br><br>"
             f"<b>Missed EOD ({len(missing)}/{len(all_members)}):</b><br>"
             + missing_list
             + f"<br><br><i>Submitted: {done_str}</i>"
+            + "<br><br><b>Total Missed This Month:</b><br>"
+            + monthly_lines
         )
 
     await _send_agile_message(html)
@@ -687,81 +705,6 @@ async def missing_eod():
     except Exception as e:
         logger.error("Missing EOD check failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Failed to send missing EOD check: {e}")
-
-
-# ──────────────────────────────────────────────
-# Monthly EOD calendar
-# ──────────────────────────────────────────────
-
-
-async def _send_monthly_calendar(year: int | None = None, month: int | None = None):
-    """Send the previous month's EOD attendance summary to Teams."""
-    import calendar
-    from datetime import datetime, timedelta
-    from app.scheduler import _is_off_day
-
-    today = date.today()
-    if year is None or month is None:
-        # Default to previous month
-        first_of_this_month = today.replace(day=1)
-        prev = first_of_this_month - timedelta(days=1)
-        year, month = prev.year, prev.month
-
-    all_members = await list_all_sheets()
-    if not all_members:
-        return
-
-    month_data = eod_tracker.get_month_data(year, month)
-
-    # Collect working days for the month (up to today if current month)
-    _, num_days = calendar.monthrange(year, month)
-    working_days = []
-    for day in range(1, num_days + 1):
-        d = date(year, month, day)
-        if d > today:
-            break
-        if not _is_off_day(datetime(year, month, day)):
-            working_days.append(d)
-
-    if not working_days:
-        return
-
-    month_name = date(year, month, 1).strftime("%B %Y")
-    total_days = len(working_days)
-
-    lines = []
-    for member in all_members:
-        missed = [d for d in working_days if member not in month_data.get(d.isoformat(), set())]
-        submitted_count = total_days - len(missed)
-
-        if not missed:
-            lines.append(f"<b>{member}</b> — {submitted_count}/{total_days} ✓ Perfect attendance!")
-        else:
-            missed_dates = ", ".join(d.strftime("%b %d") for d in missed)
-            lines.append(
-                f"<b>{member}</b> — {submitted_count}/{total_days} &nbsp;|&nbsp; "
-                f"Missed: {missed_dates}"
-            )
-
-    html = (
-        f"<b>EOD Calendar — {month_name}</b><br><br>"
-        + "<br>".join(lines)
-        + f"<br><br><i>{total_days} working days tracked</i>"
-    )
-
-    await _send_agile_message(html)
-    logger.info("Monthly EOD calendar sent for %s", month_name)
-
-
-@app.post("/api/eod-calendar")
-async def eod_calendar(year: int | None = None, month: int | None = None):
-    """Send the monthly EOD calendar. Defaults to previous month."""
-    try:
-        await _send_monthly_calendar(year, month)
-        return {"status": "ok", "year": year, "month": month}
-    except Exception as e:
-        logger.error("Monthly calendar failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to send monthly calendar: {e}")
 
 
 # ──────────────────────────────────────────────
