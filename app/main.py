@@ -36,6 +36,7 @@ from app.task_router import route_tasks
 from app.subscription_manager import subscription_manager
 from app.scheduler import scheduler
 from app import eod_tracker
+from social_media_reminder import daemon as social_reminder_daemon
 
 # ──────────────────────────────────────────────
 # Logging
@@ -80,9 +81,27 @@ async def lifespan(app: FastAPI):
         missing_eod_callback=_send_missing_eod,
     )
 
+    social_reminder_task: asyncio.Task | None = None
+    if settings.SOCIAL_REMINDER_ENABLED:
+        social_reminder_task = asyncio.create_task(
+            social_reminder_daemon(),
+            name="social-media-reminder",
+        )
+        app.state.social_reminder_task = social_reminder_task
+        logger.info(
+            "Social reminder scheduler started with Agile Copilot (@ %s IST)",
+            settings.SOCIAL_REMINDER_TIME_IST,
+        )
+
     yield
 
     # Cleanup
+    if social_reminder_task:
+        social_reminder_task.cancel()
+        try:
+            await social_reminder_task
+        except asyncio.CancelledError:
+            pass
     scheduler.stop()
     subscription_manager.stop_auto_renewal()
     if subscription_manager.is_active:
@@ -375,6 +394,12 @@ async def health_check():
         "status": "healthy",
         "service": "agile-copilot",
         "subscription_active": subscription_manager.is_active,
+        "social_reminder_enabled": settings.SOCIAL_REMINDER_ENABLED,
+        "social_reminder_running": bool(
+            getattr(app.state, "social_reminder_task", None)
+            and not app.state.social_reminder_task.done()
+        ),
+        "social_reminder_time_ist": settings.SOCIAL_REMINDER_TIME_IST,
     }
 
 

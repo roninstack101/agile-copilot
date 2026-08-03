@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # --- Teams Chat (Graph API subscription) ---
     CHAT_ID: str = Field(default="", description="MS Teams group chat ID for EOD messages")
     AGILE_CHAT_ID: str = Field(default="", description="MS Teams group chat ID for agile summaries (morning, WIP, progress). Falls back to CHAT_ID if not set.")
+    SOCIAL_TEAMS_CHAT_ID: str = Field(default="", description="Teams chat for social-media reminders")
+    SOCIAL_TEAMS_WEBHOOK_URL: str = Field(default="", description="Optional Teams Workflow webhook; leave empty to use Microsoft Graph")
     WEBHOOK_NOTIFICATION_URL: str = Field(
         default="",
         description="Public URL for Graph API subscription notifications (e.g. https://your-server.com/api/graph-webhook)",
@@ -37,6 +39,12 @@ class Settings(BaseSettings):
         default="",
         description="OAuth redirect URI for delegated auth (e.g. https://your-server.com/api/auth-callback)",
     )
+
+    # --- Social-media reminder ---
+    SOCIAL_EXCEL_URL: str = Field(default="", description="Shared social-media calendar workbook URL")
+    SOCIAL_GROQ_MODEL: str = Field(default="llama-3.3-70b-versatile", description="Groq model for calendar extraction")
+    SOCIAL_REMINDER_TIME_IST: str = Field(default="17:00", description="Daily social reminder time in IST")
+    SOCIAL_REMINDER_ENABLED: bool = Field(default=True, description="Run the social reminder scheduler with the API")
 
     # --- Server ---
     HOST: str = Field(default="0.0.0.0", description="Server host")
