@@ -385,7 +385,7 @@ def format_reminder(items: list[dict[str, Any]], target: date) -> str:
             else topic
         )
         if item.get("is_agency"):
-            responsibility = "<br>&nbsp;&nbsp;<b>Today it will be posted by Agency.</b>"
+            responsibility = "<br>&nbsp;&nbsp;<b>Tomorrow it will be posted by Agency.</b>"
         else:
             assignee = html.escape(item.get("assigned_to") or "Not assigned")
             responsibility = f"<br>&nbsp;&nbsp;Assigned to: {assignee}"
@@ -407,42 +407,42 @@ def format_reminder(items: list[dict[str, Any]], target: date) -> str:
         sections.append(f"<h2>{name}</h2>" + "<br><br>".join(blocks))
 
     add_brand("ABAJ", [
-        block("Festival", select("abaj", festival=True), "No festival story today."),
-        block("Instagram Story", select("abaj", "Instagram", "Story", False), "No Instagram story today."),
-        block("Instagram Post", select("abaj", "Instagram", "Post", False), "No Instagram post today."),
-        block("YouTube", select("abaj", "YouTube"), "No YouTube video today."),
+        block("Festival", select("abaj", festival=True), "No festival story tomorrow."),
+        block("Instagram Story", select("abaj", "Instagram", "Story", False), "No Instagram story tomorrow."),
+        block("Instagram Post", select("abaj", "Instagram", "Post", False), "No Instagram post tomorrow."),
+        block("YouTube", select("abaj", "YouTube"), "No YouTube video tomorrow."),
     ])
 
     add_brand("WEMS", [
-        block("Festival", select("wems", festival=True), "No festival post today."),
-        block("Instagram Story", select("wems", "Instagram", "Story", False), "No Instagram story today."),
-        block("Instagram Post", select("wems", "Instagram", "Post", False), "No Instagram post today."),
-        block("LinkedIn", select("wems", "LinkedIn", festival=False), "No LinkedIn post today."),
+        block("Festival", select("wems", festival=True), "No festival post tomorrow."),
+        block("Instagram Story", select("wems", "Instagram", "Story", False), "No Instagram story tomorrow."),
+        block("Instagram Post", select("wems", "Instagram", "Post", False), "No Instagram post tomorrow."),
+        block("LinkedIn", select("wems", "LinkedIn", festival=False), "No LinkedIn post tomorrow."),
     ])
 
     for key, display in (
         ("wdv", "WDV"), ("brandverse", "BRANDVERSE"), ("ravisir", "RAVI SIR")
     ):
         add_brand(display, [
-            block("LinkedIn", select(key, "LinkedIn"), "No LinkedIn post today.")
+            block("LinkedIn", select(key, "LinkedIn"), "No LinkedIn post tomorrow.")
         ])
 
     wogom_posts = select("wogom", "Instagram", "Post")
     youtube = (
-        "<b>YouTube:</b> No YouTube video today."
+        "<b>YouTube:</b> No YouTube video tomorrow."
         if not wogom_posts
-        else "<b>YouTube:</b> Same as today’s Instagram post.<br>"
+        else "<b>YouTube:</b> Same as tomorrow’s Instagram post.<br>"
         + "<br>".join(item_line(i, False) for i in wogom_posts)
     )
     add_brand("WOGOM", [
-        block("Instagram Story", select("wogom", "Instagram", "Story"), "No Instagram story today."),
-        block("Instagram Post", wogom_posts, "No Instagram post today."),
-        block("LinkedIn", select("wogom", "LinkedIn"), "No LinkedIn post today."),
+        block("Instagram Story", select("wogom", "Instagram", "Story"), "No Instagram story tomorrow."),
+        block("Instagram Post", wogom_posts, "No Instagram post tomorrow."),
+        block("LinkedIn", select("wogom", "LinkedIn"), "No LinkedIn post tomorrow."),
         youtube,
     ])
 
     add_brand("NIRAV SIR", [
-        block("LinkedIn", select("niravsir", "LinkedIn"), "No LinkedIn post today.")
+        block("LinkedIn", select("niravsir", "LinkedIn"), "No LinkedIn post tomorrow.")
     ])
 
     return (
