@@ -36,7 +36,7 @@ from app.task_router import route_tasks
 from app.subscription_manager import subscription_manager
 from app.scheduler import scheduler
 from app import eod_tracker
-from social_media_reminder import daemon as social_reminder_daemon
+from social_media_reminder import run_once as run_social_media_reminder
 
 # ──────────────────────────────────────────────
 # Logging
@@ -79,29 +79,16 @@ async def lifespan(app: FastAPI):
         morning_callback=_send_agile_reminder,
         progress_callback=_send_progress_report,
         missing_eod_callback=_send_missing_eod,
+        social_callback=(
+            _send_social_media_reminder
+            if settings.SOCIAL_REMINDER_ENABLED
+            else None
+        ),
     )
-
-    social_reminder_task: asyncio.Task | None = None
-    if settings.SOCIAL_REMINDER_ENABLED:
-        social_reminder_task = asyncio.create_task(
-            social_reminder_daemon(),
-            name="social-media-reminder",
-        )
-        app.state.social_reminder_task = social_reminder_task
-        logger.info(
-            "Social reminder scheduler started with Agile Copilot (@ %s IST)",
-            settings.SOCIAL_REMINDER_TIME_IST,
-        )
 
     yield
 
     # Cleanup
-    if social_reminder_task:
-        social_reminder_task.cancel()
-        try:
-            await social_reminder_task
-        except asyncio.CancelledError:
-            pass
     scheduler.stop()
     subscription_manager.stop_auto_renewal()
     if subscription_manager.is_active:
@@ -396,10 +383,10 @@ async def health_check():
         "subscription_active": subscription_manager.is_active,
         "social_reminder_enabled": settings.SOCIAL_REMINDER_ENABLED,
         "social_reminder_running": bool(
-            getattr(app.state, "social_reminder_task", None)
-            and not app.state.social_reminder_task.done()
+            settings.SOCIAL_REMINDER_ENABLED and scheduler.is_running
         ),
         "social_reminder_time_ist": settings.SOCIAL_REMINDER_TIME_IST,
+        "social_reminder_chat_configured": bool(settings.SOCIAL_TEAMS_CHAT_ID),
     }
 
 
@@ -604,6 +591,48 @@ async def _send_teams_message(content: str, chat_id: str | None = None) -> None:
 async def _send_agile_message(content: str) -> None:
     """Send to the agile group chat (AGILE_CHAT_ID)."""
     await _send_teams_message(content, chat_id=settings.AGILE_CHAT_ID)
+
+
+async def _build_social_media_reminder() -> dict:
+    """Build tomorrow's reminder without invoking a separate Teams sender."""
+    return await run_social_media_reminder(send=False)
+
+
+async def _send_social_media_reminder() -> dict:
+    """Send through the standard Graph flow to the dedicated social chat."""
+    result = await _build_social_media_reminder()
+    if not settings.SOCIAL_TEAMS_CHAT_ID:
+        raise ValueError("SOCIAL_TEAMS_CHAT_ID not configured")
+    await _send_teams_message(
+        result["html"],
+        chat_id=settings.SOCIAL_TEAMS_CHAT_ID,
+    )
+    logger.info(
+        "Social-media reminder sent for %s (%d items)",
+        result["date"],
+        result["count"],
+    )
+    return result
+
+
+@app.post("/api/social-media-reminder")
+async def social_media_reminder(send: bool = True):
+    """Preview or manually trigger the normal scheduled social reminder."""
+    try:
+        result = (
+            await _send_social_media_reminder()
+            if send
+            else await _build_social_media_reminder()
+        )
+        return {
+            "status": "sent" if send else "preview",
+            "date": result["date"],
+            "count": result["count"],
+            "html": result["html"],
+        }
+    except Exception as e:
+        logger.exception("Social-media reminder failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed: {e}")
 
 
 @app.post("/api/test-message")
