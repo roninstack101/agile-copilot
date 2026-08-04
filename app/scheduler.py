@@ -11,6 +11,8 @@ import asyncio
 import logging
 from datetime import datetime, time, timedelta, timezone
 
+from app.config import settings
+
 
 def _is_off_day(dt: datetime) -> bool:
     """Return True if notifications should NOT be sent on this day.
@@ -31,13 +33,26 @@ PROGRESS_REPORT_TIME = time(11, 30) # 11:30 AM IST
 EOD_REMINDER_TIME = time(18, 0)     # 6:00 PM IST
 
 
+def _social_reminder_time() -> time:
+    """Return the configured daily social reminder time in IST."""
+    try:
+        hour, minute = map(int, settings.SOCIAL_REMINDER_TIME_IST.split(":", 1))
+        return time(hour, minute)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid SOCIAL_REMINDER_TIME_IST=%r; using 17:00 IST",
+            settings.SOCIAL_REMINDER_TIME_IST,
+        )
+        return time(17, 0)
+
+
 class Scheduler:
     def __init__(self):
         self._task: asyncio.Task | None = None
         self._running = False
 
     async def _loop(self, eod_callback, morning_callback, progress_callback,
-                    missing_eod_callback):
+                    missing_eod_callback, social_callback=None):
         """Main loop — checks time every 30 seconds, fires callbacks at target times."""
         last_date: str = ""
         fired_today: set[str] = set()
@@ -53,7 +68,24 @@ class Scheduler:
                     last_date = today_key
                     logger.info("New day detected: %s — reset fired markers", today_key)
 
-                # Skip remaining notifications on Sundays, 1st and 3rd Saturdays
+                # Social media runs every calendar day, including weekends.
+                social_time = _social_reminder_time()
+                social_start = datetime.combine(now.date(), social_time, tzinfo=IST)
+                social_end = social_start + timedelta(minutes=30)
+                social_key = f"social_media_{today_key}"
+                if (
+                    social_callback is not None
+                    and social_key not in fired_today
+                    and social_start <= now < social_end
+                ):
+                    fired_today.add(social_key)
+                    logger.info("Triggering social-media reminder")
+                    try:
+                        await social_callback()
+                    except Exception as e:
+                        logger.exception("Social-media reminder failed: %s", e)
+
+                # Existing Agile notifications do not run on weekends.
                 if _is_off_day(now):
                     await asyncio.sleep(30)
                     continue
@@ -124,17 +156,22 @@ class Scheduler:
                 await asyncio.sleep(60)
 
     def start(self, eod_callback, morning_callback, progress_callback,
-              missing_eod_callback):
+              missing_eod_callback, social_callback=None):
         """Start the scheduler loop with the given async callbacks."""
         self._running = True
         self._task = asyncio.create_task(
             self._loop(eod_callback, morning_callback, progress_callback,
-                       missing_eod_callback)
+                       missing_eod_callback, social_callback)
         )
         logger.info(
             "Scheduler started (missing EOD @ 9AM, agile reminder @ 10:15AM, "
-            "progress @ 11:30AM, EOD @ 6PM IST, monthly calendar on 1st)"
+            "progress @ 11:30AM, social @ %s, EOD @ 6PM IST)",
+            settings.SOCIAL_REMINDER_TIME_IST,
         )
+
+    @property
+    def is_running(self) -> bool:
+        return bool(self._running and self._task and not self._task.done())
 
     def stop(self):
         """Stop the scheduler."""
