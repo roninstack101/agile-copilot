@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # --- Social-media reminder ---
     SOCIAL_EXCEL_URL: str = Field(default="", description="Shared social-media calendar workbook URL")
     SOCIAL_GROQ_MODEL: str = Field(default="llama-3.3-70b-versatile", description="Groq model for calendar extraction")
+    SOCIAL_MAX_WORKBOOK_CHARS: int = Field(default=90000, description="Maximum calendar text sent to Groq")
     SOCIAL_REMINDER_TIME_IST: str = Field(default="17:00", description="Daily social reminder time in IST")
     SOCIAL_REMINDER_ENABLED: bool = Field(default=True, description="Run the social reminder scheduler with the API")
 

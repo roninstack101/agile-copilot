@@ -27,6 +27,8 @@ from typing import Any
 
 import httpx
 
+from app.config import settings
+
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -53,9 +55,9 @@ def load_env() -> None:
 
 
 def required_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
+    value = str(getattr(settings, name, "") or "").strip()
     if not value:
-        raise RuntimeError(f"{name} is not configured in .env")
+        raise RuntimeError(f"{name} is not configured")
     return value
 
 
@@ -224,7 +226,7 @@ async def extract_plan_with_groq(
     workbook = compact_workbook(sheets, target)
     if not workbook.strip():
         return []
-    max_chars = int(os.getenv("SOCIAL_MAX_WORKBOOK_CHARS", "90000"))
+    max_chars = settings.SOCIAL_MAX_WORKBOOK_CHARS
     if len(workbook) > max_chars:
         raise RuntimeError(
             f"Workbook data is too large ({len(workbook)} characters). "
@@ -282,7 +284,7 @@ WORKBOOK:
             "Content-Type": "application/json",
         },
         json={
-            "model": os.getenv("SOCIAL_GROQ_MODEL", "llama-3.3-70b-versatile"),
+            "model": settings.SOCIAL_GROQ_MODEL,
             "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [
@@ -452,7 +454,7 @@ def format_reminder(items: list[dict[str, Any]], target: date) -> str:
 
 
 async def send_to_teams(client: httpx.AsyncClient, content: str) -> None:
-    webhook_url = os.getenv("SOCIAL_TEAMS_WEBHOOK_URL", "").strip()
+    webhook_url = settings.SOCIAL_TEAMS_WEBHOOK_URL.strip()
     if webhook_url:
         # Teams Workflows incoming webhooks accept an Adaptive Card envelope.
         markdown = content
@@ -516,9 +518,7 @@ async def run_once(target: date | None = None, send: bool = False) -> dict[str, 
 
 async def daemon() -> None:
     load_env()
-    hour, minute = map(
-        int, os.getenv("SOCIAL_REMINDER_TIME_IST", "18:00").split(":", 1)
-    )
+    hour, minute = map(int, settings.SOCIAL_REMINDER_TIME_IST.split(":", 1))
     last_sent = ""
     try:
         if STATE_FILE.exists():
