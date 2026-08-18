@@ -37,7 +37,7 @@ async def test_preview_builds_message_without_sending(monkeypatch):
         pytest.fail("preview must not send a Teams message")
 
     monkeypatch.setattr(reminder, "read_workbook", fake_read)
-    monkeypatch.setattr(reminder, "extract_plan_with_groq", fake_extract)
+    monkeypatch.setattr(reminder, "extract_plan_with_ai", fake_extract)
     monkeypatch.setattr(reminder, "send_to_teams", unexpected_send)
 
     result = await reminder.run_once(target=date(2026, 8, 5), send=False)

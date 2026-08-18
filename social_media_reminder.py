@@ -55,6 +55,9 @@ def load_env() -> None:
 
 
 def required_env(name: str) -> str:
+    # Reads from app.config.settings (not os.environ) so this resolves
+    # correctly whether the script runs standalone or app/main.py imports
+    # run_once() into the existing FastAPI/scheduler flow.
     value = str(getattr(settings, name, "") or "").strip()
     if not value:
         raise RuntimeError(f"{name} is not configured")
@@ -220,7 +223,7 @@ def _json_array(text: str) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-async def extract_plan_with_groq(
+async def extract_plan_with_ai(
     client: httpx.AsyncClient, sheets: list[dict[str, Any]], target: date
 ) -> list[dict[str, Any]]:
     workbook = compact_workbook(sheets, target)
@@ -278,13 +281,13 @@ WORKBOOK:
 """.strip()
 
     response = await client.post(
-        "https://api.groq.com/openai/v1/chat/completions",
+        "https://api.deepseek.com/v1/chat/completions",
         headers={
-            "Authorization": f"Bearer {required_env('GROQ_API_KEY')}",
+            "Authorization": f"Bearer {required_env('DEEPSEEK_API_KEY')}",
             "Content-Type": "application/json",
         },
         json={
-            "model": settings.SOCIAL_GROQ_MODEL,
+            "model": settings.SOCIAL_DEEPSEEK_MODEL,
             "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [
@@ -507,9 +510,12 @@ async def send_to_teams(client: httpx.AsyncClient, content: str) -> None:
 
 async def run_once(target: date | None = None, send: bool = False) -> dict[str, Any]:
     target = target or (datetime.now(IST).date() + timedelta(days=1))
-    async with httpx.AsyncClient(timeout=60) as client:
+    # deepseek-v4-flash is a reasoning model — its "thinking" pass over a full
+    # workbook prompt can run well past a short timeout, so give it more room
+    # than the other (fast, small) requests on this client would need.
+    async with httpx.AsyncClient(timeout=180) as client:
         sheets = await read_workbook(client)
-        items = await extract_plan_with_groq(client, sheets, target)
+        items = await extract_plan_with_ai(client, sheets, target)
         message = format_reminder(items, target)
         if send:
             await send_to_teams(client, message)

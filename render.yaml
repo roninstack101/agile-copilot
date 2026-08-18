@@ -28,11 +28,13 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
       - key: SOCIAL_EXCEL_URL
         sync: false
       - key: SOCIAL_REMINDER_ENABLED
         value: "true"
       - key: SOCIAL_REMINDER_TIME_IST
-        value: "17:00"
+        value: "16:00"
       - key: WEBHOOK_NOTIFICATION_URL
         sync: false

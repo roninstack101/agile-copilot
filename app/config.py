@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # --- AI API keys ---
     GEMINI_API_KEY: str = Field(default="", description="Google Gemini API key")
     GROQ_API_KEY: str = Field(default="", description="Groq API key")
+    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API key (used by the social-media reminder)")
 
     # --- Azure AD / Microsoft Graph ---
     AZURE_TENANT_ID: str = Field(default="", description="Azure AD tenant ID")
@@ -42,8 +43,8 @@ class Settings(BaseSettings):
 
     # --- Social-media reminder ---
     SOCIAL_EXCEL_URL: str = Field(default="", description="Shared social-media calendar workbook URL")
-    SOCIAL_GROQ_MODEL: str = Field(default="llama-3.3-70b-versatile", description="Groq model for calendar extraction")
-    SOCIAL_MAX_WORKBOOK_CHARS: int = Field(default=90000, description="Maximum calendar text sent to Groq")
+    SOCIAL_DEEPSEEK_MODEL: str = Field(default="deepseek-v4-flash", description="DeepSeek model for calendar extraction")
+    SOCIAL_MAX_WORKBOOK_CHARS: int = Field(default=90000, description="Maximum calendar text sent to DeepSeek")
     SOCIAL_REMINDER_TIME_IST: str = Field(default="17:00", description="Daily social reminder time in IST")
     SOCIAL_REMINDER_ENABLED: bool = Field(default=True, description="Run the social reminder scheduler with the API")
 
