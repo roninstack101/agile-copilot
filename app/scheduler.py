@@ -78,12 +78,15 @@ class Scheduler:
                     and social_key not in fired_today
                     and social_start <= now < social_end
                 ):
-                    fired_today.add(social_key)
                     logger.info("Triggering social-media reminder")
                     try:
                         await social_callback()
+                        fired_today.add(social_key)
                     except Exception as e:
-                        logger.exception("Social-media reminder failed: %s", e)
+                        logger.exception(
+                            "Social-media reminder failed; retrying in 30 seconds: %s",
+                            e,
+                        )
 
                 # Existing Agile notifications do not run on weekends.
                 if _is_off_day(now):
