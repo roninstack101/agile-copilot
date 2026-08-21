@@ -1,17 +1,17 @@
 """
 Scheduler — runs daily notifications at fixed times (IST).
 
-  9:00 AM IST        → Missing EOD check (who didn't submit yesterday)
-  10:15 AM IST       → Agile update reminder
-  11:30 AM IST       → Progress report
-  6:00 PM IST        → EOD reminder
+  9:00 AM IST        → Missing EOD check (who didn't submit yesterday) — "EOD Status"
+  4:00 PM IST        → Social-media reminder (runs every day, including weekends —
+                        the content calendar itself has weekend posts)
+
+  Agile update reminder (10:15 AM), progress report (11:30 AM), and the 6 PM
+  EOD reminder are disabled — pass their callbacks as None to re-enable.
 """
 
 import asyncio
 import logging
 from datetime import datetime, time, timedelta, timezone
-
-from app.config import settings
 
 
 def _is_off_day(dt: datetime) -> bool:
@@ -30,20 +30,8 @@ MISSING_EOD_TIME  = time(9, 0)      # 9:00 AM IST
 TODO_SUMMARY_TIME = time(9, 30)     # 9:30 AM IST
 MORNING_SUMMARY_TIME = time(10, 15) # 10:15 AM IST
 PROGRESS_REPORT_TIME = time(11, 30) # 11:30 AM IST
+SOCIAL_REMINDER_TIME = time(16, 0)  # 4:00 PM IST
 EOD_REMINDER_TIME = time(18, 0)     # 6:00 PM IST
-
-
-def _social_reminder_time() -> time:
-    """Return the configured daily social reminder time in IST."""
-    try:
-        hour, minute = map(int, settings.SOCIAL_REMINDER_TIME_IST.split(":", 1))
-        return time(hour, minute)
-    except (TypeError, ValueError):
-        logger.warning(
-            "Invalid SOCIAL_REMINDER_TIME_IST=%r; using 17:00 IST",
-            settings.SOCIAL_REMINDER_TIME_IST,
-        )
-        return time(17, 0)
 
 
 class Scheduler:
@@ -68,25 +56,20 @@ class Scheduler:
                     last_date = today_key
                     logger.info("New day detected: %s — reset fired markers", today_key)
 
-                # Social media runs every calendar day, including weekends.
-                social_time = _social_reminder_time()
-                social_start = datetime.combine(now.date(), social_time, tzinfo=IST)
-                social_end = social_start + timedelta(minutes=30)
-                social_key = f"social_media_{today_key}"
+                # Social-media reminder runs every calendar day, including weekends.
+                social_key = f"social_{today_key}"
                 if (
                     social_callback is not None
                     and social_key not in fired_today
-                    and social_start <= now < social_end
+                    and now.time() >= SOCIAL_REMINDER_TIME
+                    and now.time() < time(16, 30)
                 ):
+                    fired_today.add(social_key)
                     logger.info("Triggering social-media reminder")
                     try:
                         await social_callback()
-                        fired_today.add(social_key)
                     except Exception as e:
-                        logger.exception(
-                            "Social-media reminder failed; retrying in 30 seconds: %s",
-                            e,
-                        )
+                        logger.error("Social-media reminder failed: %s", e)
 
                 # Existing Agile notifications do not run on weekends.
                 if _is_off_day(now):
@@ -110,7 +93,8 @@ class Scheduler:
                 # 10:15 AM agile update reminder
                 morning_key = f"morning_{today_key}"
                 if (
-                    morning_key not in fired_today
+                    morning_callback is not None
+                    and morning_key not in fired_today
                     and now.time() >= MORNING_SUMMARY_TIME
                     and now.time() < time(10, 45)
                 ):
@@ -124,7 +108,8 @@ class Scheduler:
                 # 11:30 AM progress report
                 progress_key = f"progress_{today_key}"
                 if (
-                    progress_key not in fired_today
+                    progress_callback is not None
+                    and progress_key not in fired_today
                     and now.time() >= PROGRESS_REPORT_TIME
                     and now.time() < time(12, 0)
                 ):
@@ -138,7 +123,8 @@ class Scheduler:
                 # 6:00 PM EOD reminder
                 eod_key = f"eod_{today_key}"
                 if (
-                    eod_key not in fired_today
+                    eod_callback is not None
+                    and eod_key not in fired_today
                     and now.time() >= EOD_REMINDER_TIME
                     and now.time() < time(18, 30)
                 ):
@@ -166,11 +152,18 @@ class Scheduler:
             self._loop(eod_callback, morning_callback, progress_callback,
                        missing_eod_callback, social_callback)
         )
-        logger.info(
-            "Scheduler started (missing EOD @ 9AM, agile reminder @ 10:15AM, "
-            "progress @ 11:30AM, social @ %s, EOD @ 6PM IST)",
-            settings.SOCIAL_REMINDER_TIME_IST,
-        )
+        active = []
+        if missing_eod_callback is not None:
+            active.append("missing EOD @ 9AM")
+        if morning_callback is not None:
+            active.append("agile reminder @ 10:15AM")
+        if progress_callback is not None:
+            active.append("progress @ 11:30AM")
+        if social_callback is not None:
+            active.append("social @ 4PM")
+        if eod_callback is not None:
+            active.append("EOD reminder @ 6PM")
+        logger.info("Scheduler started (%s IST)", ", ".join(active) or "nothing enabled")
 
     @property
     def is_running(self) -> bool:
