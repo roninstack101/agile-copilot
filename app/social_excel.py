@@ -61,13 +61,19 @@ async def _resolve_drive_item() -> tuple[str, str]:
 
 
 async def _list_calendar_sheets(drive_id: str, item_id: str) -> list[str]:
+    """List brand worksheets, excluding the Updates sheet and any hidden sheets
+    (a hidden sheet means the brand is paused/inactive)."""
     headers = await graph_auth.get_headers()
     url = f"{GRAPH_BASE_URL}/drives/{drive_id}/items/{item_id}/workbook/worksheets"
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url, headers=headers)
         resp.raise_for_status()
-        names = [ws["name"] for ws in resp.json().get("value", [])]
-    return [n for n in names if n.strip().lower() not in _EXCLUDED_SHEETS]
+        sheets = resp.json().get("value", [])
+    return [
+        ws["name"] for ws in sheets
+        if ws["name"].strip().lower() not in _EXCLUDED_SHEETS
+        and ws.get("visibility", "Visible") == "Visible"
+    ]
 
 
 async def _fetch_sheet_values(drive_id: str, item_id: str, sheet_name: str) -> list[list]:
