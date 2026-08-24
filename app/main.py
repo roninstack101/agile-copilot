@@ -669,12 +669,11 @@ async def _send_missing_eod():
     from datetime import timedelta, datetime
     from app.scheduler import _is_off_day
 
+    # Walk back to the most recent working day (e.g. on Monday this is Friday,
+    # since Saturday/Sunday are off days with no EOD expected).
     yesterday = date.today() - timedelta(days=1)
-
-    # Don't report if yesterday was an off day (Sunday, 1st/3rd Saturday)
-    if _is_off_day(datetime(yesterday.year, yesterday.month, yesterday.day)):
-        logger.info("Skipping missing EOD check — yesterday (%s) was an off day", yesterday)
-        return
+    while _is_off_day(datetime(yesterday.year, yesterday.month, yesterday.day)):
+        yesterday -= timedelta(days=1)
 
     all_members = await list_all_sheets()
     if not all_members:
