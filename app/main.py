@@ -9,6 +9,7 @@ Endpoints:
   POST /api/eod-reminder        — send EOD reminder to Teams group chat
   POST /api/missing-eod         — send list of members who didn't submit yesterday's EOD
   POST /api/morning-summary     — send AI-prioritized morning summary to Teams
+  POST /api/social-media-reminder — preview or send tomorrow's social-media posting reminder
   GET  /api/login               — start delegated auth (sign in to send Teams messages)
   GET  /api/auth-callback       — OAuth callback to capture auth code
   GET  /health                  — health check
@@ -36,7 +37,7 @@ from app.task_router import route_tasks
 from app.subscription_manager import subscription_manager
 from app.scheduler import scheduler
 from app import eod_tracker
-from social_media_reminder import run_once as run_social_media_reminder
+from app.social_reminder import run_once as run_social_reminder
 
 # ──────────────────────────────────────────────
 # Logging
@@ -74,16 +75,15 @@ async def lifespan(app: FastAPI):
     subscription_manager.start_auto_renewal()
 
     # Start daily scheduler
+    # Agile update reminder, progress report, and the 6PM EOD reminder are
+    # disabled — only EOD Status (missing EOD check) and the social-media
+    # reminder should notify Teams. Pass the callback back in to re-enable.
     scheduler.start(
-        eod_callback=_send_eod_reminder,
-        morning_callback=_send_agile_reminder,
-        progress_callback=_send_progress_report,
+        eod_callback=None,
+        morning_callback=None,
+        progress_callback=None,
         missing_eod_callback=_send_missing_eod,
-        social_callback=(
-            _send_social_media_reminder
-            if settings.SOCIAL_REMINDER_ENABLED
-            else None
-        ),
+        social_callback=_send_social_reminder,
     )
 
     yield
@@ -381,12 +381,6 @@ async def health_check():
         "status": "healthy",
         "service": "agile-copilot",
         "subscription_active": subscription_manager.is_active,
-        "social_reminder_enabled": settings.SOCIAL_REMINDER_ENABLED,
-        "social_reminder_running": bool(
-            settings.SOCIAL_REMINDER_ENABLED and scheduler.is_running
-        ),
-        "social_reminder_time_ist": settings.SOCIAL_REMINDER_TIME_IST,
-        "social_reminder_chat_configured": bool(settings.SOCIAL_TEAMS_CHAT_ID),
     }
 
 
@@ -593,37 +587,23 @@ async def _send_agile_message(content: str) -> None:
     await _send_teams_message(content, chat_id=settings.AGILE_CHAT_ID)
 
 
-async def _build_social_media_reminder() -> dict:
-    """Build tomorrow's reminder without invoking a separate Teams sender."""
-    return await run_social_media_reminder(send=False)
-
-
-async def _send_social_media_reminder() -> dict:
-    """Send through the standard Graph flow to the dedicated social chat."""
-    result = await _build_social_media_reminder()
+async def _send_social_reminder() -> dict:
+    """Build tomorrow's social-media reminder and send it to the social Teams chat."""
+    result = await run_social_reminder()
     if not settings.SOCIAL_TEAMS_CHAT_ID:
         raise ValueError("SOCIAL_TEAMS_CHAT_ID not configured")
-    await _send_teams_message(
-        result["html"],
-        chat_id=settings.SOCIAL_TEAMS_CHAT_ID,
-    )
+    await _send_teams_message(result["html"], chat_id=settings.SOCIAL_TEAMS_CHAT_ID)
     logger.info(
-        "Social-media reminder sent for %s (%d items)",
-        result["date"],
-        result["count"],
+        "Social-media reminder sent for %s (%d items)", result["date"], result["count"],
     )
     return result
 
 
 @app.post("/api/social-media-reminder")
 async def social_media_reminder(send: bool = True):
-    """Preview or manually trigger the normal scheduled social reminder."""
+    """Preview or manually trigger the social-media reminder."""
     try:
-        result = (
-            await _send_social_media_reminder()
-            if send
-            else await _build_social_media_reminder()
-        )
+        result = await _send_social_reminder() if send else await run_social_reminder()
         return {
             "status": "sent" if send else "preview",
             "date": result["date"],
@@ -689,12 +669,11 @@ async def _send_missing_eod():
     from datetime import timedelta, datetime
     from app.scheduler import _is_off_day
 
+    # Walk back to the most recent working day (e.g. on Monday this is Friday,
+    # since Saturday/Sunday are off days with no EOD expected).
     yesterday = date.today() - timedelta(days=1)
-
-    # Don't report if yesterday was an off day (Sunday, 1st/3rd Saturday)
-    if _is_off_day(datetime(yesterday.year, yesterday.month, yesterday.day)):
-        logger.info("Skipping missing EOD check — yesterday (%s) was an off day", yesterday)
-        return
+    while _is_off_day(datetime(yesterday.year, yesterday.month, yesterday.day)):
+        yesterday -= timedelta(days=1)
 
     all_members = await list_all_sheets()
     if not all_members:

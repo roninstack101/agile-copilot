@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     # --- AI API keys ---
     GEMINI_API_KEY: str = Field(default="", description="Google Gemini API key")
     GROQ_API_KEY: str = Field(default="", description="Groq API key")
-    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API key (used by the social-media reminder)")
 
     # --- Azure AD / Microsoft Graph ---
     AZURE_TENANT_ID: str = Field(default="", description="Azure AD tenant ID")
@@ -30,8 +29,11 @@ class Settings(BaseSettings):
     # --- Teams Chat (Graph API subscription) ---
     CHAT_ID: str = Field(default="", description="MS Teams group chat ID for EOD messages")
     AGILE_CHAT_ID: str = Field(default="", description="MS Teams group chat ID for agile summaries (morning, WIP, progress). Falls back to CHAT_ID if not set.")
-    SOCIAL_TEAMS_CHAT_ID: str = Field(default="", description="Teams chat for social-media reminders")
-    SOCIAL_TEAMS_WEBHOOK_URL: str = Field(default="", description="Optional Teams Workflow webhook; leave empty to use Microsoft Graph")
+
+    # --- Social-media reminder ---
+    SOCIAL_EXCEL_SHARE_URL: str = Field(default="", description="SharePoint share link to the social-media content calendar workbook")
+    SOCIAL_TEAMS_CHAT_ID: str = Field(default="", description="Teams chat ID to send the daily social-media reminder to")
+
     WEBHOOK_NOTIFICATION_URL: str = Field(
         default="",
         description="Public URL for Graph API subscription notifications (e.g. https://your-server.com/api/graph-webhook)",
@@ -40,13 +42,6 @@ class Settings(BaseSettings):
         default="",
         description="OAuth redirect URI for delegated auth (e.g. https://your-server.com/api/auth-callback)",
     )
-
-    # --- Social-media reminder ---
-    SOCIAL_EXCEL_URL: str = Field(default="", description="Shared social-media calendar workbook URL")
-    SOCIAL_DEEPSEEK_MODEL: str = Field(default="deepseek-v4-flash", description="DeepSeek model for calendar extraction")
-    SOCIAL_MAX_WORKBOOK_CHARS: int = Field(default=90000, description="Maximum calendar text sent to DeepSeek")
-    SOCIAL_REMINDER_TIME_IST: str = Field(default="17:00", description="Daily social reminder time in IST")
-    SOCIAL_REMINDER_ENABLED: bool = Field(default=True, description="Run the social reminder scheduler with the API")
 
     # --- Server ---
     HOST: str = Field(default="0.0.0.0", description="Server host")
